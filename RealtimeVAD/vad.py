@@ -79,7 +79,8 @@ class VAD:
         continue_threshold: float = 0.45,
         start_s: float = 0.064,
         end_s: float = 0.24,  # Silero's silence count
-        quiet_end_s: Optional[float] = None,  # quiet clock; default end_s + 0.04
+        quiet_end_s: Optional[float] = None,  # quiet clock; default end_s
+        noisy_extra_s: float = 0.04,  # added when room noise has raised the quiet threshold
         quiet_rms: float = 0.002,
         noise_margin_db: float = 15.0,
         speech_margin_db: float = 15.0,
@@ -100,10 +101,12 @@ class VAD:
         self._extend = extend
         self._frame_events = frame_events
         self.start_threshold, self.continue_threshold = start_threshold, continue_threshold
-        # The quiet clock starts before Silero notices, so it waits a little longer:
-        # it can only make an end earlier than Silero's count, never later.
+        # The quiet clock can only make an end earlier than Silero's count, never later. Over
+        # near-silence it waits end_s like Silero; when room noise has raised the threshold, a
+        # word's fading tail already counts as quiet, so it waits noisy_extra_s longer.
         self.end_s = end_s
-        self.quiet_end_s = end_s + 0.04 if quiet_end_s is None else quiet_end_s
+        self.quiet_end_s = end_s if quiet_end_s is None else quiet_end_s
+        self.noisy_extra_s = noisy_extra_s
         self.quiet_rms = quiet_rms
         self.noise_margin_db, self.speech_margin_db = noise_margin_db, speech_margin_db
         self._start_frames = max(1, _frames(start_s))
@@ -131,6 +134,7 @@ class VAD:
         self._quiet = self.quiet_rms if self.quiet_rms > 0 else -1.0  # current quiet threshold (RMS)
         self._tail = False  # waiting for Silero to drop after an early end
         self._low = self._deaf = 0  # frames of p < 0.1 over real audio / over speech-loud audio
+        self._quiet_restored = False  # the quiet rule already restored in this pause
         self._in_speech = False
         self._idle = 0
         self._streak = 0
@@ -210,14 +214,17 @@ class VAD:
             self._finish(t, events, speech_end=self._t_quiet)
         elif quiet and self._t_quiet is None:
             self._t_quiet, self._unbroken, self._loud, self._quiet_blocks = t, True, 0, 1
+            raised = self._quiet > self.quiet_rms * (1 + 1e-6)
+            self._quiet_wait = self.quiet_end_s + (self.noisy_extra_s if raised else 0.0)
             self._pause(t, events, "quiet")
 
     def _target(self, t: float) -> float:
-        """Quiet-clock wait: quiet_end_s, or longer if ``extend`` asks once that is reached."""
-        if t - self._t_quiet + EPS < self.quiet_end_s or self._extend is None:
-            return self.quiet_end_s
+        """Quiet-clock wait (set when it armed), or longer if ``extend`` asks once that is reached."""
+        wait = self._quiet_wait
+        if t - self._t_quiet + EPS < wait or self._extend is None:
+            return wait
         extra = self._extend(t)
-        return self.quiet_end_s if extra is None else max(self.quiet_end_s, extra)
+        return wait if extra is None else max(wait, extra)
 
     # -- per 32 ms Silero frame --------------------------------------------
     def _frame(self, frame: np.ndarray, t: float, events: list[Event]) -> None:
@@ -229,9 +236,10 @@ class VAD:
         echo = t <= self._echo_until
         self._history.append((frame, level, echo))
         self._levels(p, level, echo)
-        if self._tail:  # after an early end, Silero's fading tail must not open a new segment
+        if self._tail:  # after an early end, Silero's fading tail must not open a new segment...
             self._tail = p >= self.continue_threshold
-            voiced = False
+            if level <= 20.0 * math.log10(max(self._quiet, 1e-9)):
+                voiced = False  # ...over quiet audio; speech that resumes at once is loud and may start
         if not self._in_speech:
             self._idle_frame(p, voiced, level, t, events)
             self._report(t, p, voiced, infer_s, events)
@@ -291,16 +299,28 @@ class VAD:
         # second of p < 0.1 over real audio (gated digital silence doesn't drift it, and a
         # restore there only disturbs the next onset), never on a frame that sounds like an
         # onset; or at once when Silero has ignored speech-loud audio for deaf_s.
+        #
+        # The restore point is the state after the *user's* confident speech, never after
+        # the assistant's own voice: a state that last heard playback echo scores following
+        # room noise as speech (p ~0.96 decaying over 0.4 s), which opens phantom segments.
         restore = getattr(self._p, "restore", None)
-        if not self._restore_n or restore is None or self._in_speech:
+        snapshot = getattr(self._p, "snapshot", None)
+        if p >= self.start_threshold and not echo and snapshot is not None:
+            snapshot()
+        if self._in_speech:
+            self._quiet_restored = False  # a new pause may restore once more
+        if not self._restore_n or restore is None or self._in_speech or echo:
             self._low = self._deaf = 0
             return
         speech_like = self._speech_like(level)
         # a healthy Silero passes continue_threshold within 1-3 frames of loud speech
         self._deaf = 0 if p >= self.continue_threshold else self._deaf + speech_like
         self._low = self._low + 1 if p < 0.1 and level > -70.0 else 0  # near-silence (gates, noise suppression) never drifts it
-        if (self._deaf_n and self._deaf >= self._deaf_n) or (self._low >= self._restore_n and not speech_like):
+        deaf = self._deaf_n and self._deaf >= self._deaf_n
+        quiet = self._low >= self._restore_n and not speech_like and not self._quiet_restored
+        if deaf or quiet:  # the quiet rule fires once per pause: one restore un-sticks Silero
             restore()
+            self._quiet_restored = self._quiet_restored or bool(quiet)
             self._low = self._deaf = 0
 
     def _speech_like(self, level: float) -> bool:
@@ -391,3 +411,4 @@ class VAD:
         self._unbroken = False
         self._loud = 0
         self._quiet_blocks = 0
+        self._quiet_wait = self.quiet_end_s

@@ -12,9 +12,10 @@ actually goes quiet.
 - **start**: speech has begun. It needs about 64 ms of confident speech, so short noises and single blips don't trigger it.
 - **pause**: the speaker may have stopped. It comes at the first sign of silence (within ~10 ms) so speculative work can begin early. It doesn't end the speech.
 - **end**: the speech segment is over. Its timing:
-  - It comes 0.28 s after the audio went quiet, or 0.24 s after the speech
-    model notices the silence, whichever is first. So it's never later than
-    the speech model alone would end it.
+  - It comes 0.24 s after the audio went quiet (0.28 s when room noise has
+    raised what counts as quiet, since a word's fading tail then already
+    counts), or 0.24 s after the speech model notices the silence, whichever
+    is first. So it's never later than the speech model alone would end it.
   - Speech that resumes before then cancels it, even very soft speech.
   - A short click or noise doesn't end the segment, and doesn't restart the silence count either.
   - "Quiet" is judged against the room's noise level, so **pause** and the
@@ -53,8 +54,12 @@ Delivered with **end**:
 - Streaming. No delay beyond the 10 ms quiet block or the model's own frame.
 - CPU only, one thread, far faster than realtime. No network and no threads of its own.
 - Works on endless streams: if the speech model stops responding (it can lock
-  up after long low-level noise or near-silent pauses), it recovers by itself,
-  within about a second of hearing nothing over real audio, or within ~0.2 s
-  when it ignores audio as loud as the speaker. Plain digital silence never
-  triggers a recovery, since that would only disturb the next onset.
+  up after long low-level noise or near-silent pauses), it recovers by itself:
+  once per pause after about a second of hearing nothing over real audio, or
+  within ~0.2 s when it ignores audio as loud as the speaker. Near-silence never
+  triggers a recovery, and none happens during the assistant's own playback.
+- A recovery never makes it hear speech that isn't there: it returns to how the
+  model sounded after the *user's* speech, never after the assistant's own voice.
+- The assistant's own voice (echo) never starts a segment by way of a recovery,
+  and silence after the assistant speaks never produces a phantom segment.
 - Every threshold and duration above can be configured.

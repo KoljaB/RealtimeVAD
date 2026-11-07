@@ -184,7 +184,8 @@ def test_quiet_is_judged_against_room_noise():
     assert kinds(ev) == ["start", "pause", "pause", "end"]
     t_pause = 20 * F
     assert ev[-1].segment.speech_end == pytest.approx(t_pause, abs=0.011)
-    assert ev[-1].time == pytest.approx(ev[-1].segment.speech_end + 0.24)
+    # room noise raised the threshold, so the quiet clock waits noisy_extra_s (0.04) longer
+    assert ev[-1].time == pytest.approx(ev[-1].segment.speech_end + 0.28)
     fixed = run(segs, noise_margin_db=-200.0)  # no adaptation: quiet stays at quiet_rms
     assert kinds(fixed) == ["start", "pause"]  # never quiet, Silero never drops: no end
 
@@ -204,14 +205,14 @@ def test_silero_tail_after_early_end_does_not_start_a_segment():
     assert kinds(ev) == ["start", "pause", "end", "start"]  # once Silero dropped, speech starts
 
 
-def test_quiet_clock_waits_longer_but_never_ends_later_than_silero():
-    # Default quiet wait is end_s + 0.04: here Silero (p 0.1, noise keeps the quiet clock off)
-    # still ends after exactly 8 frames, and over silence the quiet clock ends at +0.28 s.
+def test_quiet_clock_default_waits_and_never_ends_later_than_silero():
+    # Silero (p 0.1, loud noise keeps the quiet clock off) still ends after exactly 8 frames;
+    # over near-silence the quiet clock waits end_s, like Silero's own count.
     ev = run(SPEECH + [(12, 0.1, 0.05)], quiet_end_s=None)
     assert ev[-1].time == pytest.approx(18 * F)
     ev = run(SPEECH + [(20, 0.6, 0.0)], quiet_end_s=None)
     t_quiet = (10 * FRAME + 160) / 16000
-    assert ev[-1].time == pytest.approx(t_quiet + 0.28)
+    assert ev[-1].time == pytest.approx(t_quiet + 0.24)
 
 
 def test_soft_opening_kept_in_loud_noise():
@@ -291,3 +292,36 @@ def test_integration_hooks_frames_pause_sources_and_running_segment():
 def test_quiet_rms_zero_turns_the_quiet_clock_off():
     ev = run(SPEECH + [(20, 0.6, 0.0)], quiet_rms=0.0)
     assert kinds(ev) == ["start"]  # no quiet pause, no early end; Silero still says voiced
+
+
+def test_restore_point_is_never_taken_from_playback_echo():
+    class Model(Restorable):
+        def __init__(self, probs):
+            super().__init__(probs)
+            self.snapshots = 0
+
+        def snapshot(self):
+            self.snapshots += 1
+
+    probs = [0.95] * 10 + [0.95] * 10
+    m = Model(probs)
+    vad = VAD(probability=m, end_s=0.24, quiet_end_s=0.24)
+    vad.feed(np.full(10 * FRAME, 0.1, dtype=np.float32))
+    user = m.snapshots
+    assert user == 10  # the user's confident speech sets the restore point
+    vad.feed(np.full(10 * FRAME, 0.1, dtype=np.float32), playback=True)
+    assert m.snapshots == user  # the assistant's own voice (echo) never does
+
+
+def test_quiet_restore_fires_once_per_pause():
+    segs = [(100, 0.0, 1e-3)]  # 3.2 s of -60 dBFS room noise, Silero hears nothing
+    m = Restorable([p for n, p, _ in segs for _ in range(n)])
+    feed(m, segs)
+    assert m.restores == 1  # not every second: one restore un-sticks Silero
+
+
+def test_speech_resuming_right_after_an_early_end_still_starts():
+    # Early quiet-clock end while Silero stays high, then the user goes on talking at once:
+    # Silero never drops below continue_threshold, but the loud audio may open the next segment.
+    ev = run(SPEECH + [(10, 0.6, 0.0), (8, 0.95, 0.1)])
+    assert kinds(ev)[:4] == ["start", "pause", "end", "start"]

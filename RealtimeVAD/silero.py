@@ -53,12 +53,17 @@ class Silero:
         )
         self._context = audio[:, -64:].copy()
         p = float(np.asarray(p).reshape(-1)[0])
-        if p >= 0.9:
-            self._snapshot = (self._state, self._context)  # fresh arrays each frame
-        self._quiet = self._quiet + 1 if p < 0.1 else 0
-        if self._restore_frames and self._quiet >= self._restore_frames:
-            self.restore()
+        if self._restore_frames:  # standalone rule; inside VAD, VAD decides both (see vad.py)
+            if p >= 0.9:
+                self.snapshot()
+            self._quiet = self._quiet + 1 if p < 0.1 else 0
+            if self._quiet >= self._restore_frames:
+                self.restore()
         return p
+
+    def snapshot(self) -> None:
+        """Remember the current state as the restore point (fresh arrays each frame)."""
+        self._snapshot = (self._state, self._context)
 
     def restore(self) -> None:
         """Put the state back to the last confident speech (zeros before any); affects the next frame."""
