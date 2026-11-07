@@ -267,3 +267,27 @@ def test_silero_restore_when_it_ignores_speech_loud_audio():
     m = Restorable([p for n, p, _ in segs for _ in range(n)])
     feed(m, segs, end_s=0.24, quiet_end_s=0.24)
     assert m.restores == 0  # a healthy Silero (p >= 0.45 on speech) is left alone
+
+
+def test_integration_hooks_frames_pause_sources_and_running_segment():
+    probs = [0.95] * 2 + [0.9] * 8 + [0.6] * 3 + [0.1] * 3
+    audio = np.zeros(16 * FRAME, dtype=np.float32)
+    audio[: 10 * FRAME] = 0.1
+    vad = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24, frame_events=True)
+    ev = vad.feed(audio)
+    frames = [e for e in ev if e.kind == "frame"]
+    assert len(frames) == 16 and frames[1].frame.in_speech and frames[0].frame.streak == 1
+    assert frames[13].frame.silent_frames == 1  # first unvoiced frame inside speech
+    pauses = [e.source for e in ev if e.kind == "pause"]
+    assert pauses == ["quiet"]  # the 10 ms clock came first; Silero's own pause shows in frames
+    armed, unbroken, blocks = vad.quiet_clock
+    assert armed and unbroken and blocks >= 2
+    seg = vad.segment()
+    assert seg.start == pytest.approx(F) and seg.voiced_s == pytest.approx(13 * F)
+    assert seg.end == pytest.approx(16 * F) and len(seg.audio) == 16 * FRAME
+    assert vad.onset_lookback_s == 0.0
+
+
+def test_quiet_rms_zero_turns_the_quiet_clock_off():
+    ev = run(SPEECH + [(20, 0.6, 0.0)], quiet_rms=0.0)
+    assert kinds(ev) == ["start"]  # no quiet pause, no early end; Silero still says voiced

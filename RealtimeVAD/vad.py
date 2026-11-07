@@ -4,6 +4,7 @@ silence count against a 10 ms near-silence clock (see SPEC.md)."""
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -28,10 +29,26 @@ class Segment:
 
 
 @dataclass(frozen=True)
+class Frame:
+    """One evaluated 32 ms model frame (only with ``frame_events=True``)."""
+
+    probability: float
+    voiced: bool
+    in_speech: bool
+    silent_frames: int  # consecutive unvoiced frames inside speech
+    streak: int  # voiced frames toward a start
+    voiced_s: float  # of the running segment
+    peak: float  # of the running segment
+    infer_s: float  # model inference time
+
+
+@dataclass(frozen=True)
 class Event:
-    kind: str  # "start" | "pause" | "end"
+    kind: str  # "start" | "pause" | "end" | "frame"
     time: float
     segment: Optional[Segment] = None  # set on "end"
+    source: str = ""  # "pause": "quiet" (10 ms clock) or "silero" (first unvoiced frame)
+    frame: Optional[Frame] = None  # set on "frame"
 
 
 def _frames(seconds: float) -> int:
@@ -72,6 +89,7 @@ class VAD:
         deaf_s: float = 0.19,  # ...or after Silero ignored speech-loud audio this long
         max_speech_s: float = 120.0,
         extend: Optional[Callable[[float], Optional[float]]] = None,
+        frame_events: bool = False,
         probability: Optional[Callable[[np.ndarray], float]] = None,
     ) -> None:
         if probability is None:
@@ -80,6 +98,7 @@ class VAD:
             probability = Silero(restore_s=0)  # restores are decided here, from audio evidence
         self._p = probability
         self._extend = extend
+        self._frame_events = frame_events
         self.start_threshold, self.continue_threshold = start_threshold, continue_threshold
         # The quiet clock starts before Silero notices, so it waits a little longer:
         # it can only make an end earlier than Silero's count, never later.
@@ -109,23 +128,41 @@ class VAD:
         self._floor: Optional[float] = None  # idle floor for the onset look-back
         self._noise_db: Optional[float] = None  # room noise for the quiet threshold
         self._speech_db: Optional[float] = None
-        self._quiet = self.quiet_rms  # current quiet threshold (RMS)
+        self._quiet = self.quiet_rms if self.quiet_rms > 0 else -1.0  # current quiet threshold (RMS)
         self._tail = False  # waiting for Silero to drop after an early end
         self._low = self._deaf = 0  # frames of p < 0.1 over real audio / over speech-loud audio
         self._in_speech = False
         self._idle = 0
         self._streak = 0
+        self._lookback_s = 0.0
         self._clear_segment()
 
     @property
     def in_speech(self) -> bool:
         return self._in_speech
 
+    @property
+    def onset_lookback_s(self) -> float:
+        """How far the latest start was moved back over a soft opening."""
+        return self._lookback_s
+
+    @property
+    def quiet_clock(self) -> tuple[bool, bool, int]:
+        """(armed, unbroken, quiet blocks since it armed) of the 10 ms quiet clock."""
+        return self._t_quiet is not None, self._unbroken, self._quiet_blocks
+
     def audio(self) -> Optional[np.ndarray]:
         """The running segment's audio up to the latest sample fed, or None outside speech."""
         if not self._in_speech:
             return None
         return np.concatenate(self._audio + [self._frame_buf])
+
+    def segment(self) -> Optional[Segment]:
+        """The running segment so far (end = now), or None outside speech."""
+        if not self._in_speech:
+            return None
+        return Segment(self.audio(), self._start, self._n / SAMPLE_RATE, self._last_voiced,
+                       self._voiced * FRAME_S, self._peak)
 
     def feed(self, audio, playback: bool = False) -> list[Event]:
         """``playback=True`` marks the chunk as possibly containing your own output (echo)."""
@@ -158,6 +195,7 @@ class VAD:
         if self._t_quiet is not None:
             if quiet:
                 self._loud = 0
+                self._quiet_blocks += self._unbroken
             else:
                 self._unbroken = False
                 self._loud += BLOCK
@@ -171,8 +209,8 @@ class VAD:
         if self._t_quiet is not None and self._unbroken and t - self._t_quiet + EPS >= self._target(t):
             self._finish(t, events, speech_end=self._t_quiet)
         elif quiet and self._t_quiet is None:
-            self._t_quiet, self._unbroken, self._loud = t, True, 0
-            self._pause(t, events)
+            self._t_quiet, self._unbroken, self._loud, self._quiet_blocks = t, True, 0, 1
+            self._pause(t, events, "quiet")
 
     def _target(self, t: float) -> float:
         """Quiet-clock wait: quiet_end_s, or longer if ``extend`` asks once that is reached."""
@@ -183,7 +221,9 @@ class VAD:
 
     # -- per 32 ms Silero frame --------------------------------------------
     def _frame(self, frame: np.ndarray, t: float, events: list[Event]) -> None:
+        t0 = time.perf_counter()
         p = self._p(frame)
+        infer_s = time.perf_counter() - t0
         voiced = p >= (self.continue_threshold if self._in_speech or self._streak else self.start_threshold)
         level = _dbfs(frame)
         echo = t <= self._echo_until
@@ -194,6 +234,7 @@ class VAD:
             voiced = False
         if not self._in_speech:
             self._idle_frame(p, voiced, level, t, events)
+            self._report(t, p, voiced, infer_s, events)
             return
         self._audio.append(frame)
         self._peak = max(self._peak, p)
@@ -209,7 +250,8 @@ class VAD:
         else:
             self._silent += 1
             if self._silent == 1:
-                self._pause(t, events)
+                self._pause(t, events, "silero")
+        self._report(t, p, voiced, infer_s, events)
         if len(self._audio) >= self._max_frames:
             self._finish(t, events)
             return
@@ -232,12 +274,15 @@ class VAD:
                 self._noise_db = n + max(-1.0, min(1.0, level - n))
             else:  # idle: falls fast, rises 3 dB/s, so a soft opening barely lifts it
                 self._noise_db = level if level <= n else n + min(level - n, 3.0 * FRAME_S)
-        db = 20.0 * math.log10(self.quiet_rms)
-        if self._noise_db is not None:
-            db = max(db, self._noise_db + self.noise_margin_db)
-        if self._speech_db is not None:
-            db = min(db, self._speech_db - self.speech_margin_db)  # soft speech is never quiet
-        self._quiet = 10.0 ** (db / 20.0)
+        if self.quiet_rms <= 0:
+            self._quiet = -1.0  # quiet clock off: no block is ever quiet
+        else:
+            db = 20.0 * math.log10(self.quiet_rms)
+            if self._noise_db is not None:
+                db = max(db, self._noise_db + self.noise_margin_db)
+            if self._speech_db is not None:
+                db = min(db, self._speech_db - self.speech_margin_db)  # soft speech is never quiet
+            self._quiet = 10.0 ** (db / 20.0)
         # Silero's recurrent state drifts in long noisy or near-silent stretches until it is
         # "deaf" (p ~ 0 through loud speech). Restore the last confident-speech state after a
         # second of p < 0.1 over real audio (gated digital silence doesn't drift it, and a
@@ -279,6 +324,7 @@ class VAD:
         self._in_speech = True
         self._audio = [f for f, _, _ in list(self._history)[-keep:]]
         self._start = t - (self._streak - 1 + lookback) * FRAME_S  # end of first streak frame, as in Miep
+        self._lookback_s = lookback * FRAME_S
         self._voiced = self._streak
         self._last_voiced = t
         events.append(Event("start", self._start))
@@ -306,10 +352,16 @@ class VAD:
         return count if count > self._preroll_n - s else 0
 
     # -- segment bookkeeping -----------------------------------------------
-    def _pause(self, t: float, events: list[Event]) -> None:
+    def _report(self, t: float, p: float, voiced: bool, infer_s: float, events: list[Event]) -> None:
+        if self._frame_events:
+            events.append(Event("frame", t, frame=Frame(
+                p, voiced, self._in_speech, self._silent, self._streak,
+                self._voiced * FRAME_S, self._peak, infer_s)))
+
+    def _pause(self, t: float, events: list[Event], source: str) -> None:
         if not self._paused:
             self._paused = True
-            events.append(Event("pause", t))
+            events.append(Event("pause", t, source=source))
 
     def _finish(self, t: float, events: list[Event], speech_end: Optional[float] = None) -> None:
         segment = Segment(
@@ -335,3 +387,4 @@ class VAD:
         self._t_quiet: Optional[float] = None
         self._unbroken = False
         self._loud = 0
+        self._quiet_blocks = 0
