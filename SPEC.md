@@ -16,6 +16,9 @@ actually goes quiet.
     went quiet, not from when a speech model notices.
   - Speech that resumes before then cancels it, even very soft speech.
   - A short click or noise doesn't end the segment, and doesn't restart the silence count either.
+  - "Quiet" is judged against the room's noise level, so **pause** and the
+    early end work in noisy rooms too. The noise level is learned only from
+    audio that isn't speech, and soft speech is never treated as silence.
   - An optional external detector, such as semantic end-of-turn detection,
     may extend the wait. It may also shorten an extension it asked for
     earlier, but never below 0.24 s.
