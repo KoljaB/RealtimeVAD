@@ -277,11 +277,14 @@ class VAD:
         if self.quiet_rms <= 0:
             self._quiet = -1.0  # quiet clock off: no block is ever quiet
         else:
-            db = 20.0 * math.log10(self.quiet_rms)
+            # Noise can raise the threshold above quiet_rms, but only up to speech level - 15 dB
+            # (soft speech is never quiet); it never drops below quiet_rms, so it is never stricter.
+            floor_db = 20.0 * math.log10(self.quiet_rms)
+            db = floor_db
             if self._noise_db is not None:
                 db = max(db, self._noise_db + self.noise_margin_db)
             if self._speech_db is not None:
-                db = min(db, self._speech_db - self.speech_margin_db)  # soft speech is never quiet
+                db = max(floor_db, min(db, self._speech_db - self.speech_margin_db))
             self._quiet = 10.0 ** (db / 20.0)
         # Silero's recurrent state drifts in long noisy or near-silent stretches until it is
         # "deaf" (p ~ 0 through loud speech). Restore the last confident-speech state after a
@@ -295,7 +298,7 @@ class VAD:
         speech_like = self._speech_like(level)
         # a healthy Silero passes continue_threshold within 1-3 frames of loud speech
         self._deaf = 0 if p >= self.continue_threshold else self._deaf + speech_like
-        self._low = self._low + 1 if p < 0.1 and level > -90.0 else 0
+        self._low = self._low + 1 if p < 0.1 and level > -70.0 else 0  # near-silence (gates, noise suppression) never drifts it
         if (self._deaf_n and self._deaf >= self._deaf_n) or (self._low >= self._restore_n and not speech_like):
             restore()
             self._low = self._deaf = 0
