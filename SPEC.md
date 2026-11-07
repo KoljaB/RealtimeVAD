@@ -12,7 +12,7 @@ actually goes quiet.
 - **start**: speech has begun. It needs about 64 ms of confident speech, so short noises and single blips don't trigger it.
 - **pause**: the speaker may have stopped. It comes at the first sign of silence (within ~10 ms) so speculative work can begin early. It doesn't end the speech.
 - **end**: the speech segment is over. Its timing:
-  - It comes 0.24 s after the speech stopped, counted from when the audio
+  - It comes 0.28 s after the speech stopped, counted from when the audio
     went quiet, not from when a speech model notices.
   - Speech that resumes before then cancels it, even very soft speech.
   - A short click or noise doesn't end the segment, and doesn't restart the silence count either.
@@ -21,7 +21,7 @@ actually goes quiet.
     audio that isn't speech, and soft speech is never treated as silence.
   - An optional external detector, such as semantic end-of-turn detection,
     may extend the wait. It may also shorten an extension it asked for
-    earlier, but never below 0.24 s.
+    earlier, but never below 0.28 s.
   - A segment ends anyway after 120 s.
 
 ## Audio

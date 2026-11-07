@@ -61,8 +61,11 @@ class VAD:
         start_threshold: float = 0.90,
         continue_threshold: float = 0.45,
         start_s: float = 0.064,
-        end_s: float = 0.24,
+        end_s: float = 0.28,
         quiet_rms: float = 0.002,
+        noise_margin_db: float = 15.0,
+        speech_margin_db: float = 15.0,
+        reset_after_s: float = 0.0,  # >0: reset Silero after this much clear non-speech (experimental)
         preroll_s: float = 0.30,
         lookback_s: float = 1.0,
         max_speech_s: float = 120.0,
@@ -77,6 +80,8 @@ class VAD:
         self._extend = extend
         self.start_threshold, self.continue_threshold = start_threshold, continue_threshold
         self.end_s, self.quiet_rms = end_s, quiet_rms
+        self.noise_margin_db, self.speech_margin_db = noise_margin_db, speech_margin_db
+        self._reset_frames = _frames(reset_after_s) if reset_after_s > 0 else 0
         self._start_frames = max(1, _frames(start_s))
         self._end_frames = max(1, _frames(end_s))
         self._max_frames = max(1, _frames(max_speech_s))
@@ -94,7 +99,12 @@ class VAD:
         self._frame_buf = np.zeros(0, dtype=np.float32)
         self._echo_until = -math.inf
         self._history: deque = deque(maxlen=self._preroll_n + self._lookback_n)  # (frame, dBFS, echo)
-        self._floor: Optional[float] = None
+        self._floor: Optional[float] = None  # idle floor for the onset look-back
+        self._noise_db: Optional[float] = None  # room noise for the quiet threshold
+        self._speech_db: Optional[float] = None
+        self._quiet = self.quiet_rms  # current quiet threshold (RMS)
+        self._low_p = 0  # consecutive frames of clear non-speech
+        self._tail = False  # waiting for Silero to drop after an early end
         self._in_speech = False
         self._idle = 0
         self._streak = 0
@@ -137,7 +147,7 @@ class VAD:
 
     # -- per 10 ms block (quiet clock) -------------------------------------
     def _block_start(self, block: np.ndarray) -> bool:
-        quiet = math.sqrt(float(np.mean(block * block))) <= self.quiet_rms
+        quiet = math.sqrt(float(np.mean(block * block))) <= self._quiet
         if self._t_quiet is not None:
             if quiet:
                 self._loud = 0
@@ -169,7 +179,12 @@ class VAD:
         p = self._p(frame)
         voiced = p >= (self.continue_threshold if self._in_speech or self._streak else self.start_threshold)
         level = _dbfs(frame)
-        self._history.append((frame, level, t <= self._echo_until))
+        echo = t <= self._echo_until
+        self._history.append((frame, level, echo))
+        self._levels(p, level, echo)
+        if self._tail:  # after an early end, Silero's fading tail must not open a new segment
+            self._tail = p >= self.continue_threshold
+            voiced = False
         if not self._in_speech:
             self._idle_frame(p, voiced, level, t, events)
             return
@@ -196,6 +211,33 @@ class VAD:
             self._end_target = self._end_frames if extra is None else max(self._end_frames, _frames(extra))
         if self._silent >= self._end_target:
             self._finish(t, events)
+
+    def _levels(self, p: float, level: float, echo: bool) -> None:
+        """Learn speech and room-noise levels, set the quiet threshold, un-stick Silero."""
+        if p >= self.start_threshold:
+            s = self._speech_db
+            self._speech_db = level if s is None else s + max(-1.0, min(1.0, level - s))
+        elif p < self.continue_threshold and level > -90.0 and not echo:  # skip gated digital silence
+            n = self._noise_db
+            if n is None:
+                self._noise_db = level
+            elif self._in_speech:  # pauses inside speech: running median, about 1 dB per frame
+                self._noise_db = n + max(-1.0, min(1.0, level - n))
+            else:  # idle: falls fast, rises 3 dB/s, so a soft opening barely lifts it
+                self._noise_db = level if level <= n else n + min(level - n, 3.0 * FRAME_S)
+        db = 20.0 * math.log10(self.quiet_rms)
+        if self._noise_db is not None:
+            db = max(db, self._noise_db + self.noise_margin_db)
+        if self._speech_db is not None:
+            db = min(db, self._speech_db - self.speech_margin_db)  # soft speech is never quiet
+        self._quiet = 10.0 ** (db / 20.0)
+        # Silero's recurrent state can lock up in long streams; reset it after clear non-speech.
+        self._low_p = self._low_p + 1 if p < 0.1 else 0
+        if self._reset_frames and self._low_p >= self._reset_frames and not self._in_speech:
+            reset = getattr(self._p, "reset", None)
+            if reset is not None:
+                reset()
+            self._low_p = 0
 
     def _idle_frame(self, p: float, voiced: bool, level: float, t: float, events: list[Event]) -> None:
         floor = self._floor
@@ -253,6 +295,7 @@ class VAD:
             peak=self._peak,
         )
         self._in_speech = False
+        self._tail = speech_end is not None  # ended by the quiet clock, Silero may still be high
         self._idle = self._streak = 0
         self._clear_segment()
         events.append(Event("end", t, segment))
