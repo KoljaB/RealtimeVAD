@@ -68,6 +68,8 @@ class VAD:
         speech_margin_db: float = 15.0,
         preroll_s: float = 0.30,
         lookback_s: float = 1.0,
+        restore_s: float = 1.0,  # Silero recovery after this much p < 0.1 over real (non-zero) audio; 0 = off
+        deaf_s: float = 0.19,  # ...or after Silero ignored speech-loud audio this long
         max_speech_s: float = 120.0,
         extend: Optional[Callable[[float], Optional[float]]] = None,
         probability: Optional[Callable[[np.ndarray], float]] = None,
@@ -75,7 +77,7 @@ class VAD:
         if probability is None:
             from .silero import Silero
 
-            probability = Silero()
+            probability = Silero(restore_s=0)  # restores are decided here, from audio evidence
         self._p = probability
         self._extend = extend
         self.start_threshold, self.continue_threshold = start_threshold, continue_threshold
@@ -91,6 +93,8 @@ class VAD:
         self._preroll_n = _frames(preroll_s)
         self._lookback_n = max(0, _frames(lookback_s))
         self._rearm_samples = max(1, math.ceil(start_s * SAMPLE_RATE))
+        self._restore_n = _frames(restore_s) if restore_s > 0 else 0
+        self._deaf_n = _frames(deaf_s) if deaf_s > 0 and restore_s > 0 else 0
         self.reset()
 
     def reset(self) -> None:
@@ -107,6 +111,7 @@ class VAD:
         self._speech_db: Optional[float] = None
         self._quiet = self.quiet_rms  # current quiet threshold (RMS)
         self._tail = False  # waiting for Silero to drop after an early end
+        self._low = self._deaf = 0  # frames of p < 0.1 over real audio / over speech-loud audio
         self._in_speech = False
         self._idle = 0
         self._streak = 0
@@ -233,6 +238,29 @@ class VAD:
         if self._speech_db is not None:
             db = min(db, self._speech_db - self.speech_margin_db)  # soft speech is never quiet
         self._quiet = 10.0 ** (db / 20.0)
+        # Silero's recurrent state drifts in long noisy or near-silent stretches until it is
+        # "deaf" (p ~ 0 through loud speech). Restore the last confident-speech state after a
+        # second of p < 0.1 over real audio (gated digital silence doesn't drift it, and a
+        # restore there only disturbs the next onset), never on a frame that sounds like an
+        # onset; or at once when Silero has ignored speech-loud audio for deaf_s.
+        restore = getattr(self._p, "restore", None)
+        if not self._restore_n or restore is None or self._in_speech:
+            self._low = self._deaf = 0
+            return
+        speech_like = self._speech_like(level)
+        # a healthy Silero passes continue_threshold within 1-3 frames of loud speech
+        self._deaf = 0 if p >= self.continue_threshold else self._deaf + speech_like
+        self._low = self._low + 1 if p < 0.1 and level > -90.0 else 0
+        if (self._deaf_n and self._deaf >= self._deaf_n) or (self._low >= self._restore_n and not speech_like):
+            restore()
+            self._low = self._deaf = 0
+
+    def _speech_like(self, level: float) -> bool:
+        """Loud like the speaker and clearly above the idle floor."""
+        if self._speech_db is None or self._floor is None:
+            return False
+        margin = max(3.0, min(10.0, 0.5 * (self._speech_db - self._floor)))
+        return level >= max(self._floor + margin, self._speech_db - 10.0)
 
     def _idle_frame(self, p: float, voiced: bool, level: float, t: float, events: list[Event]) -> None:
         floor = self._floor

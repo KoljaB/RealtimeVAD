@@ -57,10 +57,15 @@ class Silero:
             self._snapshot = (self._state, self._context)  # fresh arrays each frame
         self._quiet = self._quiet + 1 if p < 0.1 else 0
         if self._restore_frames and self._quiet >= self._restore_frames:
-            self._quiet = 0  # affects the next frame only
-            self.restores += 1
-            if self._snapshot is None:
-                self.reset()
-            else:
-                self._state, self._context = (a.copy() for a in self._snapshot)
+            self.restore()
         return p
+
+    def restore(self) -> None:
+        """Put the state back to the last confident speech (zeros before any); affects the next frame."""
+        self._quiet = 0
+        self.restores += 1
+        if self._snapshot is None:
+            self._context = np.zeros((1, 64), dtype=np.float32)
+            self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        else:
+            self._state, self._context = (a.copy() for a in self._snapshot)

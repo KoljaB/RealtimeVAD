@@ -221,3 +221,49 @@ def test_soft_opening_kept_in_loud_noise():
     assert run(segs)[0].time == pytest.approx(21 * F)
     quiet_room = [(20, 0.0, 1e-4), (15, 0.3, 0.01), (2, 0.95, 0.1)]
     assert run(quiet_room)[0].time == pytest.approx(21 * F)  # unchanged where 12 dB is reachable
+
+
+class Restorable:
+    """Scripted probability source with Silero's restore() hook."""
+
+    def __init__(self, probs):
+        self.it, self.restores = iter(probs), 0
+
+    def __call__(self, frame):
+        return next(self.it, 0.0)
+
+    def restore(self):
+        self.restores += 1
+
+
+def feed(model, segments, **kw):
+    vad = VAD(probability=model, **kw)
+    for n, _, amp in segments:
+        vad.feed(np.full(n * FRAME, amp, dtype=np.float32))
+    return vad
+
+
+def test_no_silero_restore_over_digital_silence():
+    segs = [(70, 0.0, 0.0)]  # 2.2 s of exact zeros: the state doesn't drift there
+    m = Restorable([p for n, p, _ in segs for _ in range(n)])
+    feed(m, segs)
+    assert m.restores == 0
+
+
+def test_silero_restore_after_a_second_of_low_p_over_real_audio():
+    segs = [(40, 0.0, 1e-3)]  # 1.3 s of -60 dBFS room noise, Silero hears nothing
+    m = Restorable([p for n, p, _ in segs for _ in range(n)])
+    feed(m, segs)
+    assert m.restores == 1
+
+
+def test_silero_restore_when_it_ignores_speech_loud_audio():
+    # A segment teaches the speech level; later Silero scores loud speech only 0.2 ("deaf").
+    segs = SPEECH + [(12, 0.1, 1e-3), (6, 0.2, 0.1)]
+    m = Restorable([p for n, p, _ in segs for _ in range(n)])
+    feed(m, segs, end_s=0.24, quiet_end_s=0.24)
+    assert m.restores == 1  # after 6 speech-loud frames (0.19 s), long before a quiet second
+    segs = SPEECH + [(12, 0.1, 1e-3), (6, 0.6, 0.1)]
+    m = Restorable([p for n, p, _ in segs for _ in range(n)])
+    feed(m, segs, end_s=0.24, quiet_end_s=0.24)
+    assert m.restores == 0  # a healthy Silero (p >= 0.45 on speech) is left alone

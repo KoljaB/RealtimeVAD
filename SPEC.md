@@ -53,6 +53,8 @@ Delivered with **end**:
 - Streaming. No delay beyond the 10 ms quiet block or the model's own frame.
 - CPU only, one thread, far faster than realtime. No network and no threads of its own.
 - Works on endless streams: if the speech model stops responding (it can lock
-  up after long low-level noise or near-silent pauses), it recovers by itself
-  within about a second of hearing nothing.
+  up after long low-level noise or near-silent pauses), it recovers by itself,
+  within about a second of hearing nothing over real audio, or within ~0.2 s
+  when it ignores audio as loud as the speaker. Plain digital silence never
+  triggers a recovery, since that would only disturb the next onset.
 - Every threshold and duration above can be configured.
