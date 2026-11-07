@@ -61,11 +61,11 @@ class VAD:
         start_threshold: float = 0.90,
         continue_threshold: float = 0.45,
         start_s: float = 0.064,
-        end_s: float = 0.28,
+        end_s: float = 0.24,  # Silero's silence count
+        quiet_end_s: Optional[float] = None,  # quiet clock; default end_s + 0.04
         quiet_rms: float = 0.002,
         noise_margin_db: float = 15.0,
         speech_margin_db: float = 15.0,
-        reset_after_s: float = 0.0,  # >0: reset Silero after this much clear non-speech (experimental)
         preroll_s: float = 0.30,
         lookback_s: float = 1.0,
         max_speech_s: float = 120.0,
@@ -79,9 +79,12 @@ class VAD:
         self._p = probability
         self._extend = extend
         self.start_threshold, self.continue_threshold = start_threshold, continue_threshold
-        self.end_s, self.quiet_rms = end_s, quiet_rms
+        # The quiet clock starts before Silero notices, so it waits a little longer:
+        # it can only make an end earlier than Silero's count, never later.
+        self.end_s = end_s
+        self.quiet_end_s = end_s + 0.04 if quiet_end_s is None else quiet_end_s
+        self.quiet_rms = quiet_rms
         self.noise_margin_db, self.speech_margin_db = noise_margin_db, speech_margin_db
-        self._reset_frames = _frames(reset_after_s) if reset_after_s > 0 else 0
         self._start_frames = max(1, _frames(start_s))
         self._end_frames = max(1, _frames(end_s))
         self._max_frames = max(1, _frames(max_speech_s))
@@ -103,7 +106,6 @@ class VAD:
         self._noise_db: Optional[float] = None  # room noise for the quiet threshold
         self._speech_db: Optional[float] = None
         self._quiet = self.quiet_rms  # current quiet threshold (RMS)
-        self._low_p = 0  # consecutive frames of clear non-speech
         self._tail = False  # waiting for Silero to drop after an early end
         self._in_speech = False
         self._idle = 0
@@ -168,11 +170,11 @@ class VAD:
             self._pause(t, events)
 
     def _target(self, t: float) -> float:
-        """Quiet-clock wait: end_s, or longer if ``extend`` asks once end_s is reached."""
-        if t - self._t_quiet + EPS < self.end_s or self._extend is None:
-            return self.end_s
+        """Quiet-clock wait: quiet_end_s, or longer if ``extend`` asks once that is reached."""
+        if t - self._t_quiet + EPS < self.quiet_end_s or self._extend is None:
+            return self.quiet_end_s
         extra = self._extend(t)
-        return self.end_s if extra is None else max(self.end_s, extra)
+        return self.quiet_end_s if extra is None else max(self.quiet_end_s, extra)
 
     # -- per 32 ms Silero frame --------------------------------------------
     def _frame(self, frame: np.ndarray, t: float, events: list[Event]) -> None:
@@ -213,7 +215,7 @@ class VAD:
             self._finish(t, events)
 
     def _levels(self, p: float, level: float, echo: bool) -> None:
-        """Learn speech and room-noise levels, set the quiet threshold, un-stick Silero."""
+        """Learn speech and room-noise levels and set the quiet threshold."""
         if p >= self.start_threshold:
             s = self._speech_db
             self._speech_db = level if s is None else s + max(-1.0, min(1.0, level - s))
@@ -231,13 +233,6 @@ class VAD:
         if self._speech_db is not None:
             db = min(db, self._speech_db - self.speech_margin_db)  # soft speech is never quiet
         self._quiet = 10.0 ** (db / 20.0)
-        # Silero's recurrent state can lock up in long streams; reset it after clear non-speech.
-        self._low_p = self._low_p + 1 if p < 0.1 else 0
-        if self._reset_frames and self._low_p >= self._reset_frames and not self._in_speech:
-            reset = getattr(self._p, "reset", None)
-            if reset is not None:
-                reset()
-            self._low_p = 0
 
     def _idle_frame(self, p: float, voiced: bool, level: float, t: float, events: list[Event]) -> None:
         floor = self._floor
@@ -265,7 +260,10 @@ class VAD:
         h, s = self._history, self._streak
         if not self._lookback_n or floor is None or len(h) < s or any(h[-i][2] for i in range(1, s + 1)):
             return 0
-        threshold = max(floor + 12.0, -60.0)
+        margin = 12.0  # an opening must be clearly louder than the room...
+        if self._speech_db is not None:  # ...but in loud noise, half the speech-to-noise gap is enough
+            margin = max(3.0, min(margin, 0.5 * (self._speech_db - floor)))
+        threshold = max(floor + margin, -60.0)
         count = gap = 0
         for step in range(1, min(self._lookback_n, self._idle - s, len(h) - s) + 1):
             _, level, echo = h[-(s + step)]

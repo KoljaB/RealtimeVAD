@@ -24,7 +24,7 @@ def stream(it, audio, **kw):
 
 
 def scenario():
-    probs = [0.0] * 10 + [0.9] * 10 + [0.2] * 20
+    probs = [0.0] * 10 + [0.9] * 10 + [0.6] * 5 + [0.2] * 15  # Silero lags 5 frames after speech
     audio = np.zeros(40 * 512, dtype=np.float32)
     audio[: 10 * 512] = 0.05  # room noise
     audio[10 * 512 : 20 * 512] = 0.1  # speech, then silence
@@ -39,7 +39,7 @@ def test_same_results_shape_and_silero_start_sample():
     assert out[0] == (10, {"start": 10 * 512 - 480})  # first speech chunk minus 30 ms pad
     chunk, end = out[1]
     assert end == {"end": 10400 + 480}  # speech stopped at the first quiet 10 ms block, plus pad
-    assert chunk == 23  # Silero's own VADIterator reports this end at chunk 24, after its silence count
+    assert chunk == 24  # quiet clock: 10400 + 140 ms (min_silence + 40 ms); Silero's own count ends at chunk 29
     assert not it.triggered
 
 
