@@ -1,8 +1,8 @@
 # RealtimeVAD live demo
 
-[![The demo page after three turns](demo.jpg)](demo.mp4)
+https://github.com/user-attachments/assets/d01900dd-9601-4f3d-8c88-db55e8bc83a1
 
-*13 seconds, with sound: [demo.mp4](demo.mp4). The voice is synthetic: this clip shows a median lead of 92 ms, against 110 ms on real voice-assistant turns. The lead depends on the voice and on how each sentence ends.*
+The voice is synthetic: this clip shows a median lead of 92 ms, against 110 ms on real voice-assistant turns. The lead depends on the voice and on how each sentence ends.*
 
 Speak into the microphone and stop. The page shows how much sooner RealtimeVAD
 knew that you stopped than Silero alone, on the same audio.
