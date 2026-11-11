@@ -50,26 +50,38 @@ def sample():
 
 
 class SileroOnly:
-    """Where the turn would end with Silero alone: end_s of frames below continue_threshold.
-    Uses the very same probabilities RealtimeVAD sees, so the comparison is exact."""
+    """What Silero alone would decide, from the very same probabilities RealtimeVAD sees:
+    - its pause: the first frame below continue_threshold after RealtimeVAD's quiet pause
+    - its turn end: end_s of consecutive frames below continue_threshold."""
 
     def __init__(self, vad):
         self.needed = math.ceil(vad.end_s / FRAME_S - 1e-9)
         self.threshold = vad.continue_threshold
-        self.segment, self.silent = None, 0
+        self.segment, self.silent, self.quiet_pause = None, 0, None
 
     def start(self, segment):
-        self.segment, self.silent = segment, 0
+        self.segment, self.silent, self.quiet_pause = segment, 0, None
+
+    def pause(self, t, source):
+        """RealtimeVAD paused. From the quiet clock: wait for Silero's own silent frame."""
+        self.quiet_pause = t if source == "quiet" else None
 
     def frame(self, p, t):
-        """Returns the segment number when Silero alone would end it at this frame."""
+        """Messages for the page: Silero's pause lagging a quiet pause, Silero's turn end."""
+        out = []
         if self.segment is None:
-            return None
+            return out
         self.silent = self.silent + 1 if p < self.threshold else 0
+        if self.quiet_pause is not None and t - self.quiet_pause > 0.6:
+            self.quiet_pause = None  # speech went on; this quiet pause has no Silero partner
+        if self.silent == 1 and self.quiet_pause is not None:
+            out.append({"type": "sileroPause", "time": t, "pauseTime": self.quiet_pause,
+                        "segment": self.segment})
+            self.quiet_pause = None
         if self.silent >= self.needed:
-            segment, self.segment = self.segment, None
-            return segment
-        return None
+            out.append({"type": "sileroEnd", "time": t, "segment": self.segment})
+            self.segment = None
+        return out
 
 
 @app.websocket("/ws")
@@ -128,9 +140,8 @@ async def stream(ws: WebSocket):
                           "voiced": f.voiced, "inSpeech": f.in_speech,
                           "quiet": vad._quiet,  # current (noise-adaptive) quiet threshold, RMS
                           "inferMs": round(f.infer_s * 1000, 3)})
-                    ended = silero.frame(f.probability, event.time)
-                    if ended is not None:
-                        send({"type": "sileroEnd", "time": event.time, "segment": ended})
+                    for message in silero.frame(f.probability, event.time):
+                        send(message)
                 elif event.kind == "start":
                     segment += 1
                     silero.start(segment)
@@ -141,6 +152,7 @@ async def stream(ws: WebSocket):
                     sync_audio()
                     request = turn.preview()
                     requests[request] = (time.perf_counter(), event.time)
+                    silero.pause(event.time, event.source)
                     send({"type": "pause", "time": event.time, "segment": segment,
                           "source": event.source})
                 elif event.kind == "end":

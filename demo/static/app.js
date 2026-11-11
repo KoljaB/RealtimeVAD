@@ -31,7 +31,8 @@ async function start(mode) {
   let source;
   if (mode === "mic") {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-      channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: false } });
+      // as in Miep: noise suppression makes word gaps actually quiet, which the 10 ms clock needs
+      channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
     source = ctx.createMediaStreamSource(stream);
     source.stop = () => stream.getTracks().forEach((t) => t.stop());
   } else {
@@ -93,7 +94,7 @@ function onAudio(samples) {
 
 // ---------------------------------------------------------------- events in
 function segment(n) {
-  if (!state.segments.has(n)) state.segments.set(n, { n, pauses: [], previews: [], text: "", partial: "" });
+  if (!state.segments.has(n)) state.segments.set(n, { n, pauses: [], previews: [], sileroPauses: [], text: "", partial: "" });
   return state.segments.get(n);
 }
 
@@ -120,10 +121,11 @@ function onMessage(m) {
     s.lead = before.length ? (s.end - before[before.length - 1].arrive) * 1000 : null;
     tile("t-lead", s.lead != null ? `${s.lead.toFixed(0)} ms` : "after end");
     renderTurn(s);
+  } else if (m.type === "sileroPause") {
+    s.sileroPauses.push({ pause: m.pauseTime, t: m.time });
+    tile("t-silero", `${((m.time - m.pauseTime) * 1000).toFixed(0)} ms`);
   } else if (m.type === "sileroEnd") {
     s.sileroEnd = m.time;
-    const later = s.end != null ? (s.sileroEnd - s.end) * 1000 : 0;
-    tile("t-silero", later < 1 ? "same time" : `+${later.toFixed(0)} ms`);
     renderTurn(s);
   } else if (m.type === "asr") {
     onAsr(s, m);
@@ -174,13 +176,18 @@ function renderTurn(s) {
   const silero = s.sileroEnd != null
     ? ((s.sileroEnd - s.end) * 1000 < 1 ? "same time" : `+${((s.sileroEnd - s.end) * 1000).toFixed(0)} ms later`)
     : s.sileroOpen ? "still listening" : "…";
+  const quiet = s.pauses.filter((p) => p.source === "quiet");
+  const missed = quiet.filter((p) => !s.sileroPauses.some((q) => Math.abs(q.pause - p.t) < 1e-6)).length;
+  const leads = s.sileroPauses.map((q) => (q.t - q.pause) * 1000);
   const chip = (cls, label, value) => `<span class="chip ${cls}">${label} <b>${value}</b></span>`;
   s.el.innerHTML = `<p>${escape(s.final || s.text || s.partial || "…")}</p><div class="chips">
     ${chip("", "voiced", `${s.voiced.toFixed(1)} s`)}
     ${chip("violet", "speech stopped → end", `${((s.end - s.speechEnd) * 1000).toFixed(0)} ms`)}
     ${chip("green", "transcript ready before end", s.lead != null ? `${s.lead.toFixed(0)} ms` : "–")}
     ${chip("cyan", `${flushes.length} pauses · pause → text`, median != null ? `${median.toFixed(0)} ms median` : "–")}
-    ${chip("red", "Silero alone", silero)}</div>`;
+    ${chip("red", "pauses Silero never saw", `${missed} of ${quiet.length}`)}
+    ${chip("red", "pause before Silero", leads.length ? leads.map((v) => `${v.toFixed(0)} ms`).join(", ") : "–")}
+    ${chip("red", "turn end, Silero alone", silero)}</div>`;
 }
 
 // ---------------------------------------------------------------- drawing
@@ -303,6 +310,14 @@ function draw() {
       if (p.t < t0) continue;
       g.fillStyle = C.amber; g.beginPath(); const px = x(p.t);
       g.moveTo(px, laneY - 6); g.lineTo(px + 5, laneY); g.lineTo(px, laneY + 6); g.lineTo(px - 5, laneY); g.fill();
+    }
+    for (const sp of s.sileroPauses) {                // Silero's own pause, linked to ours
+      if (sp.t < t0) continue;
+      const a = x(sp.pause), b = x(sp.t), y = laneY - 14;
+      g.save(); g.strokeStyle = C.red; g.lineWidth = 1.5; g.beginPath(); g.moveTo(a, y); g.lineTo(b, y); g.stroke();
+      g.fillStyle = C.red; g.beginPath(); g.moveTo(b, y - 5); g.lineTo(b + 4, y); g.lineTo(b, y + 5); g.lineTo(b - 4, y); g.fill();
+      g.font = "600 10px 'JetBrains Mono', monospace"; g.fillText(`Silero +${((sp.t - sp.pause) * 1000).toFixed(0)}ms`, b + 6, y + 4);
+      g.restore();
     }
     for (const pv of s.previews) {
       if (pv.kind !== "preview" || pv.pause == null || pv.arrive < t0) continue;
