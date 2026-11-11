@@ -1,43 +1,37 @@
 # RealtimeVAD
 
-*Fast speech-end detection for voice assistants that shouldn't wait.*
+*Know that the speaker stopped, about 110 ms before Silero does.*
 
-> **Status: early development.** The API may still change.
+[RealtimeSTT](https://github.com/KoljaB/RealtimeSTT) · [RealtimeTTS](https://github.com/KoljaB/RealtimeTTS) · [Live demo](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) · [Spec](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md)
 
-Most voice activity detectors notice speech fine, but they take hundreds of
-milliseconds to decide that the speaker has stopped. In a voice assistant, that
-delay comes before anything else can happen: ASR finalization, the LLM call and
-TTS all wait for it. RealtimeVAD is built to make that decision as early as
-possible.
+A voice assistant can't do anything until it knows the user has stopped
+talking. Speech recognition, the LLM call and the voice output all wait for
+that one decision, and a normal voice activity detector takes a few hundred
+milliseconds to make it.
 
-**Faster than Silero at detecting speech-off.** On 3,238 real voice-assistant
-turns, RealtimeVAD signalled speech-off a median **110 ms** before Silero's own
-probability dropped below its threshold, and **214 ms** before Silero's
-`VADIterator` reported the end with its default settings; it was earlier in 98 %
-of turns. The price: it also fires in short gaps between words, about ten times
-as often as Silero. If your pipeline can start speculative work at a speech-off
-and cancel it quickly, using Silero leaves that time on the table; if it can't,
-the extra false alarms cost more than they save. [How this was measured](#measured-speech-off-on-real-turns).
+RealtimeVAD makes it sooner. It keeps [Silero VAD](https://github.com/snakers4/silero-vad)
+to decide what is speech, and adds a second, faster check: every 10 ms it
+compares the audio level with the room's noise. The moment the audio goes
+quiet, you get an event, long before Silero's probability has fallen.
 
-Part of the Realtime family:
-[RealtimeSTT](https://github.com/KoljaB/RealtimeSTT) ·
-[RealtimeTTS](https://github.com/KoljaB/RealtimeTTS)
+- **Input:** 16 kHz mono audio in chunks of any size (float32, int16 or int16 bytes).
+- **Output:** `start`, `pause` and `end` events, plus the audio of the running segment at any time.
+- **Lead:** speech-off a median 110 ms before Silero's probability drops, and 214 ms before Silero's `VADIterator` reports the end, on 3,238 real turns.
+- **Price:** it also fires in short gaps between words, about ten times as often as Silero.
+- **Runs on:** one CPU thread, far faster than realtime. Needs only numpy and onnxruntime; the Silero model is bundled, no torch.
+- **Status:** alpha (0.0.3). The API may still change.
 
-## Installation
+## Quick start
 
 ```bash
 pip install realtimevad
 ```
 
-## Usage
-
-Feed 16 kHz mono audio in chunks of any size, and react to the events:
-
 ```python
 from RealtimeVAD import VAD
 
 vad = VAD()
-for chunk in microphone_chunks():           # float32, int16 or int16 bytes
+for chunk in microphone_chunks():
     for event in vad.feed(chunk):
         if event.kind == "start":
             stream_to_asr(vad.audio())       # includes the audio just before speech began
@@ -47,55 +41,40 @@ for chunk in microphone_chunks():           # float32, int16 or int16 bytes
             finalize(event.segment.audio)
 ```
 
-### About `pause`: early, and often wrong
+## Events
 
-`pause` fires extremely early, within about 10 ms of the first sign of
-silence. That makes it fire constantly: on every breath, every short gap
-between words and every stop consonant. Most `pause` events are false
-positives, and that is intended.
-
-`pause` is made for speculative generation: start the ASR finalization, the
-LLM call or TTS right away, and cancel it the moment speech continues. If
-that work is cheap to abort, a false `pause` costs almost nothing, and a
-correct one saves hundreds of milliseconds. Never treat a `pause` as the end
-of the turn; only `end` closes a segment. If your pipeline can't cancel
-quickly, ignore `pause` and wait for `end`.
-
-### Measured: speech-off on real turns
-
-3,238 turns from a live voice assistant (one speaker, one microphone, browser
-capture with noise suppression and echo cancellation, mostly quiet rooms),
-each with its trailing silence, run through RealtimeVAD with default settings.
-Silero's decisions are computed from the very same frame probabilities, so both
-see identical input. "Speech-off" is RealtimeVAD's last `pause` before the turn
-ended, against the first frame of Silero's final run below its threshold.
-
-| RealtimeVAD speech-off earlier than … | median | p25 – p75 | p90 | earlier in |
-|---|---|---|---|---|
-| Silero, probability below 0.5 (its default threshold) | 110 ms | 84 – 190 ms | 242 ms | 98 % |
-| Silero, probability below 0.35 (`VADIterator`'s end threshold) | 120 ms | 98 – 200 ms | 252 ms | 98 % |
-| Silero `VADIterator` end, default 100 ms minimum silence | 214 ms | 192 – 298 ms | 356 ms | 99 % |
-
-| Speech-off signals followed by more speech | per second of speech | turns without any |
+| Event | Meaning | When |
 |---|---|---|
-| RealtimeVAD `pause` | 1.6 | 16 % |
-| Silero, probability below 0.5 | 0.15 | 85 % |
+| `start` | Speech has begun | After about 64 ms of confident speech, so clicks don't trigger it |
+| `pause` | The speaker may have stopped (speech-off) | Within about 10 ms of the audio going quiet |
+| `end` | The segment is over | 0.24 s after speech-off, unless speech resumes. Never later than Silero alone |
+| `onset` | Speech may have begun | At the first confident frame, before `start` confirms it. Off by default: `VAD(onset_events=True)` |
 
-What these numbers don't cover:
+`vad.audio()` returns the running segment at any time, starting about 0.3 s
+before the speech. `end` carries the finished segment with its audio, start
+time, end time and the time the speech stopped.
 
-- One speaker and one capture chain. The early speech-off comes from audio that
-  actually goes quiet after a word; noise suppression helps that. In the few
-  noisier turns (above −70 dBFS room level, 147 turns) the median lead was
-  92–132 ms; without noise suppression in a loud room expect less.
-- Earlier is not the same as correct: whether a speech-off sometimes lands
-  inside a soft word ending was not checked against word timings.
-- This is speech-off, not the turn end. `end` waits 0.24 s after it in both
-  cases; its own gain over Silero is smaller and depends on the noise.
+If your assistant talks while the microphone is open, pass
+`vad.feed(chunk, playback=True)` for those chunks so its own voice is handled
+as possible echo. Every threshold and duration can be configured;
+[SPEC.md](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md) lists what is guaranteed.
 
-Reproduce with your own recordings: `python benchmarks/speech_off_lead.py <wav dir> out.json`
-(16 kHz mono WAVs, one turn each, with trailing silence).
+## How to use `pause`
 
-Already using Silero's `VADIterator`? Change the import:
+`pause` is early and often wrong, on purpose. It fires on every breath, every
+short gap between words and every stop consonant, so most `pause` events are
+followed by more speech.
+
+- **Use it to start work you can cancel:** finalize the transcript, call the
+  LLM, prepare the voice output. Cancel when speech continues. A wrong `pause`
+  then costs almost nothing, and a right one saves hundreds of milliseconds.
+- **Never treat it as the end of the turn.** Only `end` closes a segment.
+- **Can't cancel quickly?** Ignore `pause` and wait for `end`. The extra
+  false alarms would cost you more than they save.
+
+## Already using Silero?
+
+Change the import:
 
 ```python
 from silero_vad import load_silero_vad
@@ -109,7 +88,46 @@ The constructor and the results stay the same, but `end` arrives as soon as the
 audio goes quiet. Without a model argument, it uses the bundled Silero model and
 doesn't need torch.
 
-What it guarantees: [SPEC.md](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md).
+## Results
+
+Measured on 3,238 turns from a live voice assistant, each with its trailing
+silence, with default settings. Silero's decisions are computed from the very
+same frame probabilities, so both see identical input. "Speech-off" is
+RealtimeVAD's last `pause` before the turn ended, against the first frame of
+Silero's final run below its threshold.
+
+| RealtimeVAD speech-off earlier than … | median | p25 – p75 | p90 | earlier in |
+|---|---|---|---|---|
+| Silero, probability below 0.5 (its default threshold) | 110 ms | 84 – 190 ms | 242 ms | 98 % |
+| Silero, probability below 0.35 (`VADIterator`'s end threshold) | 120 ms | 98 – 200 ms | 252 ms | 98 % |
+| Silero `VADIterator` end, default 100 ms minimum silence | 214 ms | 192 – 298 ms | 356 ms | 99 % |
+
+| Speech-off signals followed by more speech | per second of speech | turns without any |
+|---|---|---|
+| RealtimeVAD `pause` | 1.6 | 16 % |
+| Silero, probability below 0.5 | 0.15 | 85 % |
+
+Reproduce with your own recordings (16 kHz mono WAVs, one turn each, with
+trailing silence):
+
+```bash
+python benchmarks/speech_off_lead.py <wav dir> out.json
+```
+
+## Limits
+
+- The numbers come from one speaker and one capture chain: browser capture
+  with noise suppression and echo cancellation, mostly quiet rooms.
+- The lead needs audio that actually goes quiet after a word, and noise
+  suppression helps that. In the 147 noisier turns (room level above −70 dBFS)
+  the median lead was 92–132 ms. Without noise suppression in a loud room,
+  expect less.
+- Earlier is not the same as correct: whether a speech-off sometimes lands
+  inside a soft word ending was not checked against word timings.
+- The lead is for speech-off, not for the turn end. `end` waits 0.24 s after
+  speech-off in both cases; its own gain over Silero is smaller and depends on
+  the noise.
+- 16 kHz mono only.
 
 ## Live demo
 
@@ -124,6 +142,6 @@ pip install -e ".[dev]"
 pytest
 ```
 
-## License
+## License and credits
 
-MIT
+MIT. The bundled speech model is [Silero VAD](https://github.com/snakers4/silero-vad) (MIT).
