@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RealtimeVAD Live</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo"><i></i><i></i><i></i></span>
+      <div>
+        <h1>RealtimeVAD <span>×</span> RealtimeSTT</h1>
+        <p>Knows when you stopped talking. Already knows what you said.</p>
+      </div>
+    </div>
+    <div class="controls">
+      <span id="status" class="status">idle</span>
+      <button id="sample" class="ghost">Play sample</button>
+      <button id="mic" class="primary"><span class="dot"></span>Start microphone</button>
+    </div>
+  </header>
+
+  <section class="tiles">
+    <div class="tile cyan"><label>Pause → transcript</label><b id="t-preview">–</b><small>live-flush Preview, server round trip</small></div>
+    <div class="tile green"><label>Transcript ready before turn end</label><b id="t-lead">–</b><small>last Preview vs. end-of-turn decision</small></div>
+    <div class="tile violet"><label>Speech stopped → turn end</label><b id="t-end">–</b><small>RealtimeVAD end-of-turn decision</small></div>
+    <div class="tile red"><label>Silero alone would end</label><b id="t-silero">–</b><small>same probabilities, same thresholds</small></div>
+  </section>
+
+  <section class="stage">
+    <canvas id="scope"></canvas>
+    <div class="legend">
+      <span class="k wave">voice</span>
+      <span class="k quiet">quiet threshold (adapts to the room)</span>
+      <span class="k prob">speech probability</span>
+      <span class="k pause">pause</span>
+      <span class="k preview">transcript arrives</span>
+      <span class="k end">turn end</span>
+      <span class="k silero">Silero alone</span>
+    </div>
+  </section>
+
+  <section class="live">
+    <div class="live-label"><span id="live-state">listening</span><em id="live-badge"></em></div>
+    <div id="live-text" class="live-text"><span class="hint">Press <b>Start microphone</b> and talk. Pause mid-sentence and watch the transcript arrive before the turn is even over.</span></div>
+  </section>
+
+  <section id="turns" class="turns"></section>
+
+  <footer>
+    RealtimeVAD decides start, pause and end on 10 ms blocks and 32 ms Silero frames ·
+    RealtimeSTT answers each pause from its streaming model (live flush) ·
+    every time on this page is stream time from the server
+  </footer>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

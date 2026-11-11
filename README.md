@@ -56,6 +56,13 @@ doesn't need torch.
 
 What it guarantees: [SPEC.md](SPEC.md).
 
+## Live demo
+
+[demo/](demo/README.md) pairs RealtimeVAD with a RealtimeSTT server: every
+pause gets its transcript in about 50 ms, usually before the turn has even
+ended, drawn live on one timeline next to where Silero alone would have ended
+the turn.
+
 ## Development
 
 ```bash
