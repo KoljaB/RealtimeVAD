@@ -34,13 +34,10 @@
   <section class="stage">
     <canvas id="scope"></canvas>
     <div class="legend">
-      <span class="k wave">voice</span>
-      <span class="k quiet">quiet threshold (adapts to the room)</span>
-      <span class="k prob">speech probability</span>
-      <span class="k pause">pause</span>
-      <span class="k preview">transcript arrives</span>
-      <span class="k end">turn end</span>
-      <span class="k silero">Silero's own pause / turn end</span>
+      <span class="k pause">RealtimeVAD pause (each asks for the transcript)</span>
+      <span class="k quiet">quiet threshold, adapts to the room</span>
+      <span class="k silero">Silero's silence line (0.45)</span>
+      <span class="k end">how much sooner RealtimeVAD knew</span>
     </div>
   </section>
 
