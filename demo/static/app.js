@@ -49,7 +49,7 @@ async function start(mode) {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
   ws.onmessage = (e) => onMessage(JSON.parse(e.data));
-  ws.onopen = () => setStatus("streaming", "ok");
+  ws.onopen = () => { setStatus("streaming", "ok"); sendPauseMs(); };
   ws.onclose = () => state.ws === ws && setStatus("disconnected", "bad");
 
   reset();
@@ -98,6 +98,15 @@ function segment(n) {
   return state.segments.get(n);
 }
 
+// RealtimeVAD's speech-off for a turn: its last pause at or before Silero's first silent
+// frame (the dot right before Silero drops); without one, its first pause after it.
+function rvadOff(s) {
+  const upto = s.end == null ? Infinity : s.end + 1e-6;
+  if (s.sileroOff == null) return (s.pauses.filter((p) => p.t <= upto).pop() || {}).t;
+  const before = s.pauses.filter((p) => p.t <= s.sileroOff + 1e-6 && p.t >= s.sileroOff - 0.6).pop();
+  return before ? before.t : (s.pauses.find((p) => p.t > s.sileroOff && p.t <= upto) || {}).t;
+}
+
 function onMessage(m) {
   if (m.type === "frame") {
     state.frames.push({ t: m.time, p: m.p, quiet: m.quiet, inSpeech: m.inSpeech, voiced: m.voiced });
@@ -115,7 +124,7 @@ function onMessage(m) {
   } else if (m.type === "end") {
     Object.assign(s, { end: m.time, speechEnd: m.speechEnd, voiced: m.voicedS });
     state.current = null; setLive("ended");
-    const endMs = (s.end - s.speechEnd) * 1000;
+    const endMs = (s.end - (rvadOff(s) ?? s.speechEnd)) * 1000;
     tile("t-end", `${endMs.toFixed(0)} ms`);
     const before = s.previews.filter((p) => p.arrive <= s.end);
     s.lead = before.length ? (s.end - before[before.length - 1].arrive) * 1000 : null;
@@ -123,9 +132,14 @@ function onMessage(m) {
     renderTurn(s);
   } else if (m.type === "sileroPause") {
     s.sileroPauses.push({ pause: m.pauseTime, t: m.time });
-    tile("t-silero", `${((m.time - m.pauseTime) * 1000).toFixed(0)} ms`);
   } else if (m.type === "sileroEnd") {
-    s.sileroEnd = m.time;
+    s.sileroEnd = m.time; s.sileroOff = m.silentSince;
+    const rOff = rvadOff(s);
+    if (s.end != null && rOff != null) tile("t-end", `${((s.end - rOff) * 1000).toFixed(0)} ms`);
+    if (rOff != null && s.sileroOff != null) {
+      const d = (s.sileroOff - rOff) * 1000;
+      tile("t-silero", d >= 0 ? `${d.toFixed(0)} ms` : `-${(-d).toFixed(0)} ms`);
+    }
     renderTurn(s);
   } else if (m.type === "asr") {
     onAsr(s, m);
@@ -225,8 +239,8 @@ function draw() {
   const x = (t) => nowX - (t1 - t) * pps;
   const A = { top: 14, h: 120, name: "Audio", sub: "dashed: quiet line", color: C.muted };
   const P = { top: 148, h: 46, name: "Silero", sub: "speech probability", color: C.violet };
-  const R1 = { top: 222, h: 44, name: "RealtimeVAD", sub: "knows you stopped", color: C.cyan };
-  const R2 = { top: 292, h: 44, name: "Silero alone", sub: "knows you stopped", color: C.red };
+  const R1 = { top: 222, h: 44, name: "RealtimeVAD", sub: "speech-off ● wait ▮ end", color: C.cyan };
+  const R2 = { top: 292, h: 44, name: "Silero alone", sub: "speech-off ● wait ▮ end", color: C.red };
   const T = { top: 362, h: 34, name: "Transcript", sub: "pause → text", color: "#fff" };
   A.mid = A.top + A.h / 2;
   g.clearRect(0, 0, W, H);
@@ -300,34 +314,56 @@ function draw() {
     g.fillRect(x(t) - 2, row.top + 2, 4, row.h - 4); g.restore();
   };
 
+  // Each row: in speech ─ speech-off ● ─ striped wait to be sure ─ turn end ▮
+  const wait = (row, a, b, color) => {
+    const xa = x(a), xb = x(b), y = row.top + 10, h = row.h - 20;
+    g.save(); g.beginPath(); g.rect(xa, y, xb - xa, h); g.clip();
+    g.strokeStyle = color; g.globalAlpha = 0.55; g.lineWidth = 1.5;
+    for (let k = xa - h; k < xb; k += 6) { g.beginPath(); g.moveTo(k, y + h); g.lineTo(k + h, y); g.stroke(); }
+    g.restore();
+    if (xb - xa > 92) { g.fillStyle = "#fff"; g.font = "600 10px Inter, sans-serif"; g.fillText(`waits ${((b - a) * 1000).toFixed(0)} ms`, xa + 6, row.top + row.h / 2 + 4); }
+  };
+  const off = (row, t, color) => {
+    g.save(); g.fillStyle = color; g.shadowColor = color; g.shadowBlur = 12;
+    g.beginPath(); g.arc(x(t), row.top + row.h / 2, 6, 0, 7); g.fill(); g.restore();
+  };
+  const bracket = (a, b, y, text, color) => {
+    const xa = x(a), xb = x(b);
+    g.save(); g.strokeStyle = color; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(xa, y - 5); g.lineTo(xa, y); g.lineTo(xb, y); g.lineTo(xb, y + 5); g.stroke(); g.restore();
+    label(text, xb, y + 5, color, 11);
+  };
+
   for (const s of segs) {
     const live = words(s);
-    // RealtimeVAD row: in speech from start to its end; small dots at its pauses
-    bar(R1, s.start, s.end ?? t1, live ? C.cyan : C.muted);
+    const rOff = s.end != null ? rvadOff(s) : null;
+    const sOff = s.sileroOff;
+    // RealtimeVAD: solid while in speech, amber dots at its pauses (each asks for the transcript)
+    bar(R1, s.start, rOff ?? s.end ?? t1, live ? C.cyan : C.muted);
     g.fillStyle = C.amber;
-    for (const p of s.pauses) if (p.t >= t0) { g.beginPath(); g.arc(x(p.t), R1.top + R1.h / 2, 3, 0, 7); g.fill(); }
-    // Silero-alone row: same start, ends after its own silence count
-    bar(R2, s.start, s.sileroEnd ?? t1, live ? C.red : C.muted);
+    for (const p of s.pauses) if (p.t >= t0 && p.t !== rOff) { g.beginPath(); g.arc(x(p.t), R1.top + R1.h / 2, 3, 0, 7); g.fill(); }
+    // Silero alone: same start, solid until its first silent frame
+    bar(R2, s.start, sOff ?? s.sileroEnd ?? t1, live ? C.red : C.muted);
     if (!live) { label("noise, no words: ignored", x(Math.max(s.start, t0)), R1.top + R1.h / 2 + 5, C.muted, 11); continue; }
-    if (s.end == null) continue;
 
-    // the reference: when the speech actually stopped
-    const xs = x(s.speechEnd);
-    g.save(); g.strokeStyle = "rgba(255,255,255,0.8)"; g.setLineDash([2, 3]);
-    g.beginPath(); g.moveTo(xs, A.top); g.lineTo(xs, R2.top + R2.h); g.stroke(); g.restore();
-    g.fillStyle = "#fff"; g.font = "600 11px Inter, sans-serif"; g.fillText("speech stopped", xs + 5, A.top + A.h - 6);
-
-    const after = (t) => `+${((t - s.speechEnd) * 1000).toFixed(0)} ms`;
-    end(R1, s.end, C.cyan); label(after(s.end), x(s.end), R1.top + R1.h / 2 + 5, C.cyan, 13);
-    if (s.sileroEnd != null) {
-      end(R2, s.sileroEnd, C.red); label(after(s.sileroEnd), x(s.sileroEnd), R2.top + R2.h / 2 + 5, C.red, 13);
-      const sooner = (s.sileroEnd - s.end) * 1000;
-      if (sooner >= 1) {                               // the win, between the two rows
-        const a = x(s.end), b = x(s.sileroEnd), y = R1.top + R1.h + 13;
-        g.save(); g.strokeStyle = C.green; g.lineWidth = 2;
-        g.beginPath(); g.moveTo(a, y - 5); g.lineTo(a, y); g.lineTo(b, y); g.lineTo(b, y - 5); g.stroke(); g.restore();
-        label(`${sooner.toFixed(0)} ms sooner`, b, y + 5, C.green, 12);
-      }
+    if (s.end != null && rOff != null) {
+      wait(R1, rOff, s.end, C.cyan); off(R1, rOff, C.amber); end(R1, s.end, C.cyan);
+      label("turn end", x(s.end), R1.top + R1.h / 2 + 5, C.cyan, 11);
+    }
+    if (s.sileroEnd != null && sOff != null) {
+      wait(R2, sOff, s.sileroEnd, C.red); off(R2, sOff, C.red); end(R2, s.sileroEnd, C.red);
+      label("turn end", x(s.sileroEnd), R2.top + R2.h / 2 + 5, C.red, 11);
+    }
+    // the two comparisons, between the rows
+    const mid = R1.top + R1.h + 12;
+    if (rOff != null && sOff != null) {
+      const d = (sOff - rOff) * 1000;
+      bracket(rOff, sOff, mid - 2, Math.abs(d) < 1 ? "speech-off: same time"
+        : d > 0 ? `speech-off ${d.toFixed(0)} ms sooner` : `speech-off: Silero ${(-d).toFixed(0)} ms sooner`, C.amber);
+    }
+    if (s.end != null && s.sileroEnd != null) {
+      const d = (s.sileroEnd - s.end) * 1000;
+      if (Math.abs(d) >= 1) bracket(s.end, s.sileroEnd, mid + 2, `turn end ${Math.abs(d).toFixed(0)} ms ${d > 0 ? "sooner" : "later"}`, C.green);
     }
   }
 
@@ -370,6 +406,12 @@ async function toggle(mode) {
   if (state.mode === mode) return stop();
   try { await start(mode); } catch (err) { stop(); toast(err.message || String(err)); }
 }
+function sendPauseMs() {
+  const ms = Number($("pause-ms").value);
+  $("pause-ms-value").textContent = `${ms} ms`;
+  if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ pauseMs: ms }));
+}
+$("pause-ms").oninput = sendPauseMs;
 $("mic").onclick = () => toggle("mic");
 $("sample").onclick = () => toggle("sample");
 requestAnimationFrame(draw);

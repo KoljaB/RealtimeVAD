@@ -64,6 +64,9 @@ button:disabled { opacity: .45; cursor: default; transform: none; }
 .legend .k::before { content: ""; display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 7px; vertical-align: middle; background: var(--c); }
 .k.wave { --c: var(--cyan); } .k.quiet { --c: var(--amber); } .k.prob { --c: var(--violet); }
 .k.pause { --c: var(--amber); } .k.preview { --c: #fff; } .k.end { --c: var(--green); } .k.silero { --c: var(--red); }
+.slider { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px; }
+.slider input { accent-color: var(--amber); width: 130px; }
+.slider b { font-family: var(--mono); color: var(--amber); min-width: 52px; }
 .turn.noise { padding: 8px 18px; opacity: .6; }
 .turn.noise p { margin: 0; font-size: 13px; color: var(--muted); }
 

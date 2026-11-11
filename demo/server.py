@@ -14,6 +14,7 @@ page can draw VAD decisions, Silero's own decision and ASR results on one timeli
 
 import argparse
 import asyncio
+import json
 import math
 import os
 import time
@@ -57,14 +58,21 @@ class SileroOnly:
     def __init__(self, vad):
         self.needed = math.ceil(vad.end_s / FRAME_S - 1e-9)
         self.threshold = vad.continue_threshold
-        self.segment, self.silent, self.quiet_pause = None, 0, None
+        self.segment, self.silent, self.quiet_pause, self.silent_since = None, 0, None, None
 
     def start(self, segment):
         self.segment, self.silent, self.quiet_pause = segment, 0, None
 
     def pause(self, t, source):
-        """RealtimeVAD paused. From the quiet clock: wait for Silero's own silent frame."""
-        self.quiet_pause = t if source == "quiet" else None
+        """RealtimeVAD paused. From the quiet clock: pair it with Silero's own silent frame,
+        which may come later or, with a long pause wait, may already have come."""
+        self.quiet_pause = None
+        if source != "quiet" or self.segment is None:
+            return []
+        if self.silent:
+            return [{"type": "sileroPause", "time": self.silent_since, "pauseTime": t, "segment": self.segment}]
+        self.quiet_pause = t
+        return []
 
     def frame(self, p, t):
         """Messages for the page: Silero's pause lagging a quiet pause, Silero's turn end."""
@@ -72,6 +80,8 @@ class SileroOnly:
         if self.segment is None:
             return out
         self.silent = self.silent + 1 if p < self.threshold else 0
+        if self.silent == 1:
+            self.silent_since = t
         if self.quiet_pause is not None and t - self.quiet_pause > 0.6:
             self.quiet_pause = None  # speech went on; this quiet pause has no Silero partner
         if self.silent == 1 and self.quiet_pause is not None:
@@ -79,7 +89,8 @@ class SileroOnly:
                         "segment": self.segment})
             self.quiet_pause = None
         if self.silent >= self.needed:
-            out.append({"type": "sileroEnd", "time": t, "segment": self.segment})
+            out.append({"type": "sileroEnd", "time": t, "segment": self.segment,
+                        "silentSince": self.silent_since})  # Silero's speech-off: its first silent frame
             self.segment = None
         return out
 
@@ -127,10 +138,28 @@ async def stream(ws: WebSocket):
         if turn is not None and audio is not None:
             turn.audio(audio[turn.sent:])
 
+    def pause(t, source, quiet_since=None):
+        """A pause: ask for the transcript so far and tell the page."""
+        sync_audio()
+        requests[turn.preview()] = (time.perf_counter(), t)
+        for message in silero.pause(t, source):
+            send(message)
+        send({"type": "pause", "time": t, "segment": segment, "source": source,
+              "quietSince": quiet_since if quiet_since is not None else t})
+
+    pause_wait = 0.0  # page slider: extra quiet before a quiet-clock pause counts
+    pending = None  # time the quiet clock armed, while waiting for pause_wait
+
     sending = asyncio.create_task(sender())
     try:
         while True:
-            chunk = np.frombuffer(await ws.receive_bytes(), dtype=np.int16)
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            if message.get("text"):  # {"pauseMs": n}: pause after n ms of unbroken quiet
+                pause_wait = max(0.0, json.loads(message["text"]).get("pauseMs", 10) / 1000 - 0.010)
+                continue
+            chunk = np.frombuffer(message["bytes"], dtype=np.int16)
             events = vad.feed(chunk)
             received += len(chunk)
             for event in events:
@@ -149,13 +178,12 @@ async def stream(ws: WebSocket):
                                    ca_file=args.asr_ca, language=args.language)
                     send({"type": "start", "time": event.time, "segment": segment})
                 elif event.kind == "pause":
-                    sync_audio()
-                    request = turn.preview()
-                    requests[request] = (time.perf_counter(), event.time)
-                    silero.pause(event.time, event.source)
-                    send({"type": "pause", "time": event.time, "segment": segment,
-                          "source": event.source})
+                    if event.source == "quiet" and pause_wait > 0:
+                        pending = event.time  # decided below, once the quiet has lasted
+                    else:
+                        pause(event.time, event.source)
                 elif event.kind == "end":
+                    pending = None
                     s = event.segment
                     turn.audio(s.audio[turn.sent:])
                     turn.finalize()
@@ -163,6 +191,13 @@ async def stream(ws: WebSocket):
                     turn = None
                     send({"type": "end", "time": event.time, "segment": segment, "start": s.start,
                           "speechEnd": s.speech_end, "voicedS": round(s.voiced_s, 3)})
+            if pending is not None:
+                armed, unbroken, blocks = vad.quiet_clock  # 10 ms blocks since the clock armed
+                if not (vad.in_speech and armed and unbroken):
+                    pending = None  # speech came back before the wait was over: no pause
+                elif (blocks - 1) * 0.010 >= pause_wait - 1e-9:
+                    pause(pending + (blocks - 1) * 0.010, "quiet", quiet_since=pending)
+                    pending = None
             sync_audio()
     except WebSocketDisconnect:
         pass

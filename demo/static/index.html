@@ -19,6 +19,9 @@
     </div>
     <div class="controls">
       <span id="status" class="status">idle</span>
+      <label class="slider" title="How long the audio must stay quiet before RealtimeVAD calls it a pause and asks for the transcript. Longer: fewer pauses, later speech-off.">
+        Pause after <input id="pause-ms" type="range" min="10" max="300" step="10" value="10"> <b id="pause-ms-value">10 ms</b> quiet
+      </label>
       <button id="sample" class="ghost">Play sample</button>
       <button id="mic" class="primary"><span class="dot"></span>Start microphone</button>
     </div>
@@ -27,17 +30,17 @@
   <section class="tiles">
     <div class="tile cyan"><label>Pause → transcript</label><b id="t-preview">–</b><small>live-flush Preview, server round trip</small></div>
     <div class="tile green"><label>Transcript ready before turn end</label><b id="t-lead">–</b><small>last Preview vs. end-of-turn decision</small></div>
-    <div class="tile violet"><label>Speech stopped → turn end</label><b id="t-end">–</b><small>RealtimeVAD end-of-turn decision</small></div>
-    <div class="tile red"><label>Pause found before Silero</label><b id="t-silero">–</b><small>10 ms quiet clock vs. Silero's first silent frame</small></div>
+    <div class="tile violet"><label>Speech-off → turn end</label><b id="t-end">–</b><small>RealtimeVAD waits this long to be sure</small></div>
+    <div class="tile red"><label>Speech-off before Silero</label><b id="t-silero">–</b><small>last pause vs. Silero's first silent frame</small></div>
   </section>
 
   <section class="stage">
     <canvas id="scope"></canvas>
     <div class="legend">
-      <span class="k pause">RealtimeVAD pause (each asks for the transcript)</span>
+      <span class="k pause">RealtimeVAD pause = speech-off (each asks for the transcript)</span>
       <span class="k quiet">quiet threshold, adapts to the room</span>
       <span class="k silero">Silero's silence line (0.45)</span>
-      <span class="k end">how much sooner RealtimeVAD knew</span>
+      <span class="k end">turn end sooner</span>
     </div>
   </section>
 
