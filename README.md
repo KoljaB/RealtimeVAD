@@ -38,6 +38,20 @@ for chunk in microphone_chunks():           # float32, int16 or int16 bytes
             finalize(event.segment.audio)
 ```
 
+### About `pause`: early, and often wrong
+
+`pause` fires extremely early, within about 10 ms of the first sign of
+silence. That makes it fire constantly: on every breath, every short gap
+between words and every stop consonant. Most `pause` events are false
+positives, and that is intended.
+
+`pause` is made for speculative generation: start the ASR finalization, the
+LLM call or TTS right away, and cancel it the moment speech continues. If
+that work is cheap to abort, a false `pause` costs almost nothing, and a
+correct one saves hundreds of milliseconds. Never treat a `pause` as the end
+of the turn; only `end` closes a segment. If your pipeline can't cancel
+quickly, ignore `pause` and wait for `end`.
+
 Already using Silero's `VADIterator`? Change the import:
 
 ```python
