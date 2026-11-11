@@ -21,6 +21,15 @@ quiet, you get an event, long before Silero's probability has fallen.
 - **Runs on:** one CPU thread, far faster than realtime. Needs only numpy and onnxruntime; the Silero model is bundled, no torch.
 - **Status:** alpha (0.0.3). The API may still change.
 
+## Live demo
+
+https://github.com/user-attachments/assets/d01900dd-9601-4f3d-8c88-db55e8bc83a1
+
+It uses a synthetic voice and shows a median lead of 92 ms; the 110 ms above is the median on real voice-assistant turns.
+
+[demo/](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) runs this page on your own microphone. It shows, turn by turn, how much sooner
+RealtimeVAD knew that you stopped than Silero alone, on the same audio.
+
 ## Quick start
 
 ```bash
@@ -128,18 +137,6 @@ python benchmarks/speech_off_lead.py <wav dir> out.json
   speech-off in both cases; its own gain over Silero is smaller and depends on
   the noise.
 - 16 kHz mono only.
-
-## Live demo
-
-
-https://github.com/user-attachments/assets/3a004c88-c3e8-45b9-b9ff-3f44ac47d857
-
-https://github.com/user-attachments/assets/d01900dd-9601-4f3d-8c88-db55e8bc83a1
-
-*[Watch the 13-second video](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/demo.mp4) (with sound). It uses a synthetic voice and shows a median lead of 92 ms; the 110 ms above is the median on real voice-assistant turns.*
-
-[demo/](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) runs this page on your own microphone. It shows, turn by turn, how much sooner
-RealtimeVAD knew that you stopped than Silero alone, on the same audio.
 
 ## Development
 
