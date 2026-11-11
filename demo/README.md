@@ -6,15 +6,19 @@ you stopped, and when Silero alone would have, on one scrolling timeline.
 - **Audio**: the waveform and the quiet threshold, which adapts to the room.
 - **Silero**: its speech probability per 32 ms frame, with the 0.45 line below
   which a frame counts as silent.
-- **RealtimeVAD**: a yellow dot at every pause (the audio went quiet for one
+- **RealtimeVAD**: a green ring at every onset (maybe speech: the first confident
+  frame), linked to the moment the start is confirmed; grey rings never became
+  speech (a click, a knock). Then a yellow dot at every pause (the audio went quiet for one
   10 ms block), then speech-off ●, the wait to be sure, and the turn end ▮.
 - **Silero alone**: the same probabilities and thresholds without the 10 ms
   clock: speech-off at its first silent frame, then its own wait and turn end.
 
 Between the two rows the page marks how much sooner RealtimeVAD knew, for
 speech-off and for the turn end. RealtimeVAD can only be sooner or the same,
-never later. The slider sets how long the audio must stay quiet before a pause
-counts (fewer pauses, later speech-off).
+never later. Two sliders: how long the audio must stay quiet before a pause counts
+(fewer pauses, later speech-off), and how long Silero must keep hearing speech
+before a start is confirmed (fewer false starts from clicks, later start; the
+audio still reaches back to the onset).
 
 ## Run
 

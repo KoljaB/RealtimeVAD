@@ -17,6 +17,7 @@ const state = {
   segments: new Map(), // n -> {start, pauses, end, sileroOff, sileroEnd, ...}
   current: null,       // segment number while in speech
   inferMs: [],         // recent model times per frame
+  onsets: [],          // times of "maybe speech" frames
 };
 
 // ---------------------------------------------------------------- audio in
@@ -114,9 +115,10 @@ function onMessage(m) {
     state.inferMs.push(m.inferMs); if (state.inferMs.length > 120) state.inferMs.shift();
     return;
   }
+  if (m.type === "onset") { state.onsets.push(m.time); setLive("onset"); return; }
   const s = segment(m.segment);
   if (m.type === "start") {
-    s.start = m.time; state.current = m.segment; setLive("speaking");
+    s.start = m.time; s.confirmed = m.confirmed; state.current = m.segment; setLive("speaking");
   } else if (m.type === "pause") {
     s.pauses.push(m.time); setLive("pause");
   } else if (m.type === "end") {
@@ -152,7 +154,8 @@ const signed = (ms) => (Math.abs(ms) < 1 ? "same time" : ms > 0 ? `${ms.toFixed(
 // ---------------------------------------------------------------- page text
 function setLive(kind) {
   const el = $("live-state");
-  el.textContent = { speaking: "speaking", pause: "pause · speech-off?", ended: "turn ended", listening: "listening" }[kind];
+  el.textContent = { onset: "onset · speech?", speaking: "speaking", pause: "pause · speech-off?", ended: "turn ended",
+                     listening: "listening" }[kind];
   el.className = kind;
 }
 function tile(id, text) { const el = $(id); el.textContent = text; el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
@@ -277,6 +280,21 @@ function draw() {
     label(text, xb, y + 5, color, 11);
   };
 
+  // onsets: a ring at each "maybe speech" frame. Confirmed ones link to their start
+  // confirmation; the rest (grey) never became speech, e.g. a click or a knock.
+  for (const t of state.onsets) {
+    if (t < t0) continue;
+    const s = segs.find((q) => q.confirmed != null && t >= q.start - 0.001 && t <= q.confirmed + 0.001);
+    const y = R1.top + R1.h / 2, color = s ? C.green : C.muted;
+    g.save(); g.strokeStyle = color; g.lineWidth = 2; g.beginPath(); g.arc(x(t), y, 7, 0, 7); g.stroke(); g.restore();
+    if (s && t === state.onsets.find((o) => o >= s.start - 0.001)) {
+      g.save(); g.strokeStyle = C.green; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(x(t) + 7, y); g.lineTo(x(s.confirmed), y); g.stroke();
+      g.fillRect(x(s.confirmed) - 1.5, R1.top + 6, 3, R1.h - 12); g.restore();
+      label(`start confirmed +${((s.confirmed - t) * 1000).toFixed(0)} ms`, x(s.confirmed), R1.top - 2, C.green, 11);
+    } else if (!s) label("onset only", x(t), y + 5, C.muted, 10);
+  }
+
   for (const s of segs) {
     const rOff = s.end != null ? rvadOff(s) : null, sOff = s.sileroOff;
     // RealtimeVAD: solid while in speech, amber dots at its pauses
@@ -315,9 +333,11 @@ function level(rms) { return Math.max(0, Math.min(1, (20 * Math.log10(Math.max(r
 function prune(before) {
   while (state.blocks.length && state.blocks[0].t < before) state.blocks.shift();
   while (state.frames.length && state.frames[0].t < before) state.frames.shift();
+  while (state.onsets.length && state.onsets[0] < before) state.onsets.shift();
 }
 function reset() {
-  Object.assign(state, { sent: 0, captured: 0, pending: new Float32Array(0), blockAcc: [], blocks: [], frames: [], current: null, inferMs: [] });
+  Object.assign(state, { sent: 0, captured: 0, pending: new Float32Array(0), blockAcc: [], blocks: [], frames: [], current: null,
+                         inferMs: [], onsets: [] });
   state.segments = new Map();
   $("turns").innerHTML = ""; setLive("listening");
   ["t-off", "t-end", "t-wait", "t-cpu"].forEach((id) => ($(id).textContent = "–"));
@@ -334,12 +354,14 @@ async function toggle(mode) {
   if (state.mode === mode) return stop();
   try { await start(mode); } catch (err) { stop(); toast(err.message || String(err)); }
 }
-function sendPauseMs() {
-  const ms = Number($("pause-ms").value);
-  $("pause-ms-value").textContent = `${ms} ms`;
-  if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ pauseMs: ms }));
+function sendPauseMs() {                              // both sliders
+  const pauseMs = Number($("pause-ms").value), startMs = Number($("start-ms").value);
+  $("pause-ms-value").textContent = `${pauseMs} ms`;
+  $("start-ms-value").textContent = `${startMs} ms`;
+  if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ pauseMs, startMs }));
 }
 $("pause-ms").oninput = sendPauseMs;
+$("start-ms").oninput = sendPauseMs;
 $("mic").onclick = () => toggle("mic");
 $("sample").onclick = () => toggle("sample");
 requestAnimationFrame(draw);

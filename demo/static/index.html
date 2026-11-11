@@ -22,6 +22,9 @@
       <label class="slider" title="How long the audio must stay quiet before RealtimeVAD calls it a pause (speech-off). Longer: fewer pauses, later speech-off.">
         Pause after <input id="pause-ms" type="range" min="10" max="300" step="10" value="10"> <b id="pause-ms-value">10 ms</b> quiet
       </label>
+      <label class="slider" title="How long Silero must keep hearing speech after an onset before RealtimeVAD confirms the start. Longer: clicks and knocks are rejected, the start is confirmed later (its audio still reaches back to the onset).">
+        Speech-on after <input id="start-ms" type="range" min="32" max="320" step="32" value="160"> <b id="start-ms-value">160 ms</b>
+      </label>
       <button id="sample" class="ghost">Play sample</button>
       <button id="mic" class="primary"><span class="dot"></span>Start microphone</button>
     </div>
@@ -37,6 +40,7 @@
   <section class="stage">
     <canvas id="scope"></canvas>
     <div class="legend">
+      <span class="k onset">onset: maybe speech (grey: never confirmed, e.g. a click)</span>
       <span class="k pause">RealtimeVAD pause: audio went quiet (speech-off?)</span>
       <span class="k quiet">quiet threshold, adapts to the room</span>
       <span class="k silero">Silero's silence line (0.45)</span>

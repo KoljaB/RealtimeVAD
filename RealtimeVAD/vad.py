@@ -44,7 +44,7 @@ class Frame:
 
 @dataclass(frozen=True)
 class Event:
-    kind: str  # "start" | "pause" | "end" | "frame"
+    kind: str  # "onset" | "start" | "pause" | "end" | "frame"
     time: float
     segment: Optional[Segment] = None  # set on "end"
     source: str = ""  # "pause": "quiet" (10 ms clock) or "silero" (first unvoiced frame)
@@ -91,6 +91,8 @@ class VAD:
         max_speech_s: float = 120.0,
         extend: Optional[Callable[[float], Optional[float]]] = None,
         frame_events: bool = False,
+        onset_events: bool = False,  # "onset" at the first confident frame, before "start" confirms it
+        rearm_s: Optional[float] = None,  # sound that re-arms the quiet clock; default start_s
         probability: Optional[Callable[[np.ndarray], float]] = None,
     ) -> None:
         if probability is None:
@@ -100,6 +102,7 @@ class VAD:
         self._p = probability
         self._extend = extend
         self._frame_events = frame_events
+        self._onset_events = onset_events
         self.start_threshold, self.continue_threshold = start_threshold, continue_threshold
         # The quiet clock can only make an end earlier than Silero's count, never later. Over
         # near-silence it waits end_s like Silero; when room noise has raised the threshold, a
@@ -109,12 +112,12 @@ class VAD:
         self.noisy_extra_s = noisy_extra_s
         self.quiet_rms = quiet_rms
         self.noise_margin_db, self.speech_margin_db = noise_margin_db, speech_margin_db
-        self._start_frames = max(1, _frames(start_s))
+        self.start_s = start_s
         self._end_frames = max(1, _frames(end_s))
         self._max_frames = max(1, _frames(max_speech_s))
         self._preroll_n = _frames(preroll_s)
         self._lookback_n = max(0, _frames(lookback_s))
-        self._rearm_samples = max(1, math.ceil(start_s * SAMPLE_RATE))
+        self._rearm_samples = max(1, math.ceil((start_s if rearm_s is None else rearm_s) * SAMPLE_RATE))
         self._restore_n = _frames(restore_s) if restore_s > 0 else 0
         self._deaf_n = _frames(deaf_s) if deaf_s > 0 and restore_s > 0 else 0
         self.reset()
@@ -140,6 +143,16 @@ class VAD:
         self._streak = 0
         self._lookback_s = 0.0
         self._clear_segment()
+
+    @property
+    def start_s(self) -> float:
+        """Speech needed to confirm a start (the debounce after "onset"); settable while running."""
+        return self._start_s
+
+    @start_s.setter
+    def start_s(self, seconds: float) -> None:
+        self._start_s = seconds
+        self._start_frames = max(1, _frames(seconds))
 
     @property
     def in_speech(self) -> bool:
@@ -340,6 +353,8 @@ class VAD:
         self._idle += 1
         self._streak = self._streak + 1 if voiced else 0
         self._peak = max(self._peak, p) if voiced else 0.0
+        if self._streak == 1 and self._onset_events:
+            events.append(Event("onset", t))  # maybe speech; "start" follows only if it holds
         if self._streak < self._start_frames:
             return
         lookback = self._lookback(floor)

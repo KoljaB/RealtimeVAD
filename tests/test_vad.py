@@ -1,5 +1,7 @@
 """Spec checks with a scripted probability per 32 ms frame (see SPEC.md)."""
 
+import math
+
 import numpy as np
 import pytest
 
@@ -325,3 +327,30 @@ def test_speech_resuming_right_after_an_early_end_still_starts():
     # Silero never drops below continue_threshold, but the loud audio may open the next segment.
     ev = run(SPEECH + [(10, 0.6, 0.0), (8, 0.95, 0.1)])
     assert kinds(ev)[:4] == ["start", "pause", "end", "start"]
+
+
+def test_onset_comes_first_and_a_click_stays_an_onset():
+    # a click: one confident frame and Silero's short fade above continue_threshold
+    click = run([(1, 0.95, 0.1), (2, 0.6, 0.1), (6, 0.1, 0.0)], onset_events=True, start_s=0.16)
+    assert kinds(click) == ["onset"]
+    speech = run([(1, 0.95, 0.1), (8, 0.9, 0.1)], onset_events=True, start_s=0.16)
+    assert kinds(speech) == ["onset", "start"]
+    assert speech[0].time == pytest.approx(F)  # onset at the first confident frame
+    assert speech[1].time == pytest.approx(F)  # the confirmed start still reaches back to it
+
+
+def test_onset_events_are_off_by_default():
+    assert kinds(run([(1, 0.95, 0.1), (8, 0.9, 0.1)])) == ["start"]
+
+
+def test_start_s_can_change_while_running():
+    vad = VAD(probability=scripted([0.95] + [0.9] * 8), start_s=0.5)
+    assert vad.feed(np.full(3 * FRAME, 0.1, dtype=np.float32)) == []
+    vad.start_s = 0.064
+    assert kinds(vad.feed(np.full(FRAME, 0.1, dtype=np.float32))) == ["start"]
+
+
+def test_rearm_s_stays_independent_of_start_s():
+    # resumed sound shorter than rearm_s must not re-arm the quiet clock, however long start_s is
+    vad = VAD(probability=scripted([0.95] * 10 + [0.6] * 30), start_s=0.3, rearm_s=0.064)
+    assert vad._rearm_samples == math.ceil(0.064 * 16000)

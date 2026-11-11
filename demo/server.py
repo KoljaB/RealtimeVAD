@@ -1,7 +1,7 @@
 """RealtimeVAD live demo: when RealtimeVAD knows you stopped, and when Silero alone would.
 
 The browser streams 16 kHz int16 microphone audio over a WebSocket. RealtimeVAD reports
-start / pause / end, plus one "frame" per 32 ms with Silero's probability. From those same
+onset / start / pause / end, plus one "frame" per 32 ms with Silero's probability. From those same
 probabilities the server also works out what Silero alone (same thresholds) would decide.
 Every message carries stream time (samples received / 16000 s), so the page can draw both
 on one timeline.
@@ -71,10 +71,13 @@ class SileroAlone:
 @app.websocket("/ws")
 async def stream(ws: WebSocket):
     await ws.accept()
-    vad = VAD(frame_events=True)
+    # start_s (speech-on debounce) follows the page slider; the quiet clock keeps re-arming
+    # after 64 ms of sound, so the debounce never changes the pauses
+    vad = VAD(frame_events=True, onset_events=True, start_s=0.16, rearm_s=0.064)
     silero = SileroAlone(vad)
     received = segment = 0  # samples received, speech segments so far
     pause_wait, pending = 0.0, None  # slider: extra quiet a pause needs; quiet clock start
+    last_frame = 0.0  # latest reported model frame; a start comes just before its own frame event
 
     async def send(message):
         await ws.send_json(message)
@@ -83,23 +86,30 @@ async def stream(ws: WebSocket):
         message = await ws.receive()
         if message["type"] == "websocket.disconnect":
             return
-        if message.get("text"):  # {"pauseMs": n}: a pause needs n ms of unbroken quiet
-            pause_wait = max(0.0, json.loads(message["text"]).get("pauseMs", 10) / 1000 - 0.010)
+        if message.get("text"):  # sliders: {"pauseMs": n} quiet for a pause, {"startMs": n} speech for a start
+            config = json.loads(message["text"])
+            if "pauseMs" in config:
+                pause_wait = max(0.0, config["pauseMs"] / 1000 - 0.010)
+            if "startMs" in config:
+                vad.start_s = config["startMs"] / 1000
             continue
         chunk = np.frombuffer(message["bytes"], dtype=np.int16)
         received += len(chunk)
         for event in vad.feed(chunk):
             if event.kind == "frame":
                 f = event.frame
+                last_frame = event.time
                 await send({"type": "frame", "time": event.time, "p": round(f.probability, 3),
                             "quiet": vad._quiet,  # current noise-adaptive quiet threshold (RMS)
                             "inferMs": round(f.infer_s * 1000, 3)})
                 if (end := silero.frame(f.probability, event.time)) is not None:
                     await send(end)
-            elif event.kind == "start":
+            elif event.kind == "onset":  # maybe speech: a confident frame, maybe a click
+                await send({"type": "onset", "time": event.time})
+            elif event.kind == "start":  # confirmed; its time reaches back to the onset
                 segment += 1
                 silero.start(segment)
-                await send({"type": "start", "time": event.time, "segment": segment})
+                await send({"type": "start", "time": event.time, "confirmed": last_frame + FRAME_S, "segment": segment})
             elif event.kind == "pause":
                 if event.source == "quiet" and pause_wait > 0:
                     pending = event.time  # decided below, once the quiet has lasted
