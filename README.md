@@ -19,7 +19,7 @@ quiet, you get an event, long before Silero's probability has fallen.
 - **Lead:** speech-off a median 110 ms before Silero's probability drops, and 214 ms before Silero's `VADIterator` reports the end, on 3,238 real turns.
 - **Price:** it also fires in short gaps between words, about ten times as often as Silero.
 - **Runs on:** one CPU thread, far faster than realtime. Needs only numpy and onnxruntime; the Silero model is bundled, no torch.
-- **Status:** alpha (0.0.3). The API may still change.
+- **Status:** alpha (0.0.4). The API may still change.
 
 ## Live demo
 
