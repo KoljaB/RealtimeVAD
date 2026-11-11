@@ -354,3 +354,16 @@ def test_rearm_s_stays_independent_of_start_s():
     # resumed sound shorter than rearm_s must not re-arm the quiet clock, however long start_s is
     vad = VAD(probability=scripted([0.95] * 10 + [0.6] * 30), start_s=0.3, rearm_s=0.064)
     assert vad._rearm_samples == math.ceil(0.064 * 16000)
+
+
+def test_confirm_threshold_rejects_a_click_fading_out_above_continue():
+    click = [(1, 0.95, 0.1), (4, 0.6, 0.1), (8, 0.1, 0.0)]
+    assert kinds(run(click, start_s=0.16)) == ["start", "pause", "end"]  # default: a click passes
+    assert run(click, start_s=0.16, confirm_threshold=0.8) == []
+    assert kinds(run([(1, 0.95, 0.1), (9, 0.9, 0.1)], start_s=0.16, confirm_threshold=0.8)) == ["start"]
+
+
+def test_confirm_threshold_does_not_change_continuing_speech():
+    # once started, speech continues above continue_threshold as before
+    ev = run([(1, 0.95, 0.1), (4, 0.9, 0.1), (6, 0.5, 0.1)], start_s=0.16, confirm_threshold=0.8)
+    assert kinds(ev) == ["start"]

@@ -190,7 +190,7 @@ function draw() {
   const A = { top: 14, h: 120, name: "Audio", sub: "dashed: quiet line", color: C.muted };
   const P = { top: 150, h: 50, name: "Silero", sub: "speech probability", color: C.violet };
   const R1 = { top: 232, h: 46, name: "RealtimeVAD", sub: "speech-off ● wait ▮ end", color: C.cyan };
-  const R2 = { top: 306, h: 46, name: "Silero alone", sub: "speech-off ● wait ▮ end", color: C.red };
+  const R2 = { top: 322, h: 46, name: "Silero alone", sub: "speech-off ● wait ▮ end", color: C.red };
   A.mid = A.top + A.h / 2;
   g.clearRect(0, 0, W, H);
   prune(t0 - 2);
@@ -284,10 +284,11 @@ function draw() {
   // confirmation; the rest (grey) never became speech, e.g. a click or a knock.
   for (const t of state.onsets) {
     if (t < t0) continue;
-    const s = segs.find((q) => q.confirmed != null && t >= q.start - 0.001 && t <= q.confirmed + 0.001);
+    const s = segs.find((q) => q.confirmed != null &&
+      t === state.onsets.filter((o) => o <= q.confirmed + 0.001).pop() && t >= q.start - 0.001);
     const y = R1.top + R1.h / 2, color = s ? C.green : C.muted;
     g.save(); g.strokeStyle = color; g.lineWidth = 2; g.beginPath(); g.arc(x(t), y, 7, 0, 7); g.stroke(); g.restore();
-    if (s && t === state.onsets.find((o) => o >= s.start - 0.001)) {
+    if (s) {
       g.save(); g.strokeStyle = C.green; g.lineWidth = 2;
       g.beginPath(); g.moveTo(x(t) + 7, y); g.lineTo(x(s.confirmed), y); g.stroke();
       g.fillRect(x(s.confirmed) - 1.5, R1.top + 6, 3, R1.h - 12); g.restore();
@@ -312,7 +313,7 @@ function draw() {
       label("turn end", x(s.sileroEnd), R2.top + R2.h / 2 + 5, C.red, 11);
     }
     // the two comparisons, between the rows
-    const mid = R1.top + R1.h + 12;
+    const mid = R1.top + R1.h + 8;
     if (rOff != null && sOff != null) {
       const d = (sOff - rOff) * 1000;
       bracket(rOff, sOff, mid - 2, Math.abs(d) < 1 ? "speech-off: same time"
@@ -320,7 +321,7 @@ function draw() {
     }
     if (s.end != null && s.sileroEnd != null) {
       const d = (s.sileroEnd - s.end) * 1000;
-      if (Math.abs(d) >= 1) bracket(s.end, s.sileroEnd, mid + 2, `turn end ${Math.abs(d).toFixed(0)} ms ${d > 0 ? "sooner" : "later"}`, C.green);
+      if (Math.abs(d) >= 1) bracket(s.end, s.sileroEnd, mid + 22, `turn end ${Math.abs(d).toFixed(0)} ms ${d > 0 ? "sooner" : "later"}`, C.green);
     }
   }
   g.restore();
@@ -355,13 +356,15 @@ async function toggle(mode) {
   try { await start(mode); } catch (err) { stop(); toast(err.message || String(err)); }
 }
 function sendPauseMs() {                              // both sliders
-  const pauseMs = Number($("pause-ms").value), startMs = Number($("start-ms").value);
+  const pauseMs = Number($("pause-ms").value), startMs = Number($("start-ms").value), startP = Number($("start-p").value);
   $("pause-ms-value").textContent = `${pauseMs} ms`;
   $("start-ms-value").textContent = `${startMs} ms`;
-  if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ pauseMs, startMs }));
+  $("start-p-value").textContent = startP.toFixed(2);
+  if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ pauseMs, startMs, startP }));
 }
 $("pause-ms").oninput = sendPauseMs;
 $("start-ms").oninput = sendPauseMs;
+$("start-p").oninput = sendPauseMs;
 $("mic").onclick = () => toggle("mic");
 $("sample").onclick = () => toggle("sample");
 requestAnimationFrame(draw);

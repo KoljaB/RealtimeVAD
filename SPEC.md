@@ -10,7 +10,7 @@ actually goes quiet.
 
 ## Events
 - **onset** (optional): speech may have begun. It comes at the first confident speech frame, so work can start early; a click or a knock can cause one too. Only **start** confirms it.
-- **start**: speech has begun. It needs about 64 ms of confident speech, so short noises and single blips don't trigger it. That debounce is configurable, also while running: a longer one rejects clicks and knocks, and the segment's audio still reaches back to the onset.
+- **start**: speech has begun. It needs about 64 ms of confident speech, so short noises and single blips don't trigger it. That debounce is configurable, also while running: its length, and the speech probability every frame of it must keep (by default the continue threshold). A longer, stricter one rejects clicks and knocks, whose probability fades out within a few frames; the segment's audio still reaches back to the onset.
 - **pause**: the speaker may have stopped. It comes at the first sign of silence (within ~10 ms) so speculative work can begin early. It doesn't end the speech.
 - **end**: the speech segment is over. Its timing:
   - It comes 0.24 s after the audio went quiet (0.28 s when room noise has

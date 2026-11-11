@@ -73,7 +73,7 @@ async def stream(ws: WebSocket):
     await ws.accept()
     # start_s (speech-on debounce) follows the page slider; the quiet clock keeps re-arming
     # after 64 ms of sound, so the debounce never changes the pauses
-    vad = VAD(frame_events=True, onset_events=True, start_s=0.16, rearm_s=0.064)
+    vad = VAD(frame_events=True, onset_events=True, start_s=0.32, confirm_threshold=0.8, rearm_s=0.064)
     silero = SileroAlone(vad)
     received = segment = 0  # samples received, speech segments so far
     pause_wait, pending = 0.0, None  # slider: extra quiet a pause needs; quiet clock start
@@ -86,12 +86,14 @@ async def stream(ws: WebSocket):
         message = await ws.receive()
         if message["type"] == "websocket.disconnect":
             return
-        if message.get("text"):  # sliders: {"pauseMs": n} quiet for a pause, {"startMs": n} speech for a start
+        if message.get("text"):  # sliders: pauseMs quiet for a pause; startMs and startP speech for a start
             config = json.loads(message["text"])
             if "pauseMs" in config:
                 pause_wait = max(0.0, config["pauseMs"] / 1000 - 0.010)
             if "startMs" in config:
                 vad.start_s = config["startMs"] / 1000
+            if "startP" in config:
+                vad.confirm_threshold = config["startP"]
             continue
         chunk = np.frombuffer(message["bytes"], dtype=np.int16)
         received += len(chunk)

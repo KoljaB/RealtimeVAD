@@ -92,6 +92,7 @@ class VAD:
         extend: Optional[Callable[[float], Optional[float]]] = None,
         frame_events: bool = False,
         onset_events: bool = False,  # "onset" at the first confident frame, before "start" confirms it
+        confirm_threshold: Optional[float] = None,  # each frame of the start debounce; default continue_threshold
         rearm_s: Optional[float] = None,  # sound that re-arms the quiet clock; default start_s
         probability: Optional[Callable[[np.ndarray], float]] = None,
     ) -> None:
@@ -104,6 +105,9 @@ class VAD:
         self._frame_events = frame_events
         self._onset_events = onset_events
         self.start_threshold, self.continue_threshold = start_threshold, continue_threshold
+        # After the first confident frame, every frame until start_s is reached must stay at
+        # or above this (a click fades out above continue_threshold for a few frames).
+        self.confirm_threshold = continue_threshold if confirm_threshold is None else confirm_threshold
         # The quiet clock can only make an end earlier than Silero's count, never later. Over
         # near-silence it waits end_s like Silero; when room noise has raised the threshold, a
         # word's fading tail already counts as quiet, so it waits noisy_extra_s longer.
@@ -244,7 +248,10 @@ class VAD:
         t0 = time.perf_counter()
         p = self._p(frame)
         infer_s = time.perf_counter() - t0
-        voiced = p >= (self.continue_threshold if self._in_speech or self._streak else self.start_threshold)
+        if self._in_speech:
+            voiced = p >= self.continue_threshold
+        else:  # idle: the first frame needs start_threshold, the rest of the debounce confirm_threshold
+            voiced = p >= (self.confirm_threshold if self._streak else self.start_threshold)
         level = _dbfs(frame)
         echo = t <= self._echo_until
         self._history.append((frame, level, echo))
