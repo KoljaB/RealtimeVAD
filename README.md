@@ -20,8 +20,6 @@ Part of the Realtime family:
 pip install realtimevad
 ```
 
-(Not yet published.)
-
 ## Usage
 
 Feed 16 kHz mono audio in chunks of any size, and react to the events:
@@ -54,11 +52,11 @@ The constructor and the results stay the same, but `end` arrives as soon as the
 audio goes quiet. Without a model argument, it uses the bundled Silero model and
 doesn't need torch.
 
-What it guarantees: [SPEC.md](SPEC.md).
+What it guarantees: [SPEC.md](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md).
 
 ## Live demo
 
-[demo/](demo/README.md) shows, live from your microphone, when RealtimeVAD
+[demo/](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) shows, live from your microphone, when RealtimeVAD
 notices that you stopped talking and when Silero alone would have, on one
 scrolling timeline.
 
