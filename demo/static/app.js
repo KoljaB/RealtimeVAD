@@ -3,7 +3,9 @@
 // Display: everything is placed by stream time (seconds of audio sent), the same clock the
 // server stamps on every event, so RealtimeVAD and Silero-alone decisions line up exactly.
 
-const RATE = 16000, CHUNK = 320, BLOCK = 160, WINDOW = 8;
+const RATE = 16000, CHUNK = 320, BLOCK = 160;
+// seconds of audio on the timeline; ?window=4 zooms in on the gap between the two speech-offs
+const WINDOW = Math.min(30, Math.max(2, Number(new URLSearchParams(location.search).get("window")) || 8));
 const $ = (id) => document.getElementById(id);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const C = { cyan: css("--cyan"), green: css("--green"), violet: css("--violet"), amber: css("--amber"),
@@ -11,13 +13,14 @@ const C = { cyan: css("--cyan"), green: css("--green"), violet: css("--violet"),
 
 const state = {
   ctx: null, ws: null, source: null, mode: null,
-  sent: 0, captured: 0, pending: new Float32Array(0), blockAcc: [], lastPerf: 0,
+  sent: 0, captured: 0, pending: new Float32Array(0), blockAcc: [], base: null,
   blocks: [],          // {t, rms} per 10 ms
   frames: [],          // {t, p, quiet} per 32 ms
   segments: new Map(), // n -> {start, pauses, end, sileroOff, sileroEnd, ...}
   current: null,       // segment number while in speech
   inferMs: [],         // recent model times per frame
   onsets: [],          // times of "maybe speech" frames
+  leads: [],           // speech-off lead over Silero per finished turn, ms
 };
 
 // ---------------------------------------------------------------- audio in
@@ -51,11 +54,11 @@ async function start(mode) {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
   ws.onmessage = (e) => onMessage(JSON.parse(e.data));
-  ws.onopen = () => { setStatus("streaming", "ok"); sendPauseMs(); };
+  ws.onopen = () => { setStatus("listening", "ok"); sendPauseMs(); };
   ws.onclose = () => state.ws === ws && setStatus("disconnected", "bad");
 
   reset();
-  Object.assign(state, { ctx, ws, source, mode, lastPerf: performance.now() });
+  Object.assign(state, { ctx, ws, source, mode });
   setButtons();
 }
 
@@ -91,7 +94,10 @@ function onAudio(samples) {
     state.sent += CHUNK;
   }
   state.pending = joined.slice(offset);
-  state.lastPerf = performance.now();
+  // Audio arrives in bursts, so the timeline doesn't follow it directly: it follows the wall
+  // clock, anchored to the stream by a slowly tracked offset. That scrolls evenly.
+  const offset0 = performance.now() - (state.captured / RATE) * 1000;
+  state.base = state.base == null ? offset0 : state.base + (offset0 - state.base) * 0.02;
 }
 
 // ---------------------------------------------------------------- events in
@@ -115,7 +121,7 @@ function onMessage(m) {
     state.inferMs.push(m.inferMs); if (state.inferMs.length > 120) state.inferMs.shift();
     return;
   }
-  if (m.type === "onset") { state.onsets.push(m.time); setLive("onset"); return; }
+  if (m.type === "onset") { state.onsets.push(m.time); return; }
   const s = segment(m.segment);
   if (m.type === "start") {
     s.start = m.time; s.confirmed = m.confirmed; state.current = m.segment; setLive("speaking");
@@ -136,27 +142,32 @@ function report(s) {
   const off = rvadOff(s);
   s.offLead = off != null ? (s.sileroOff - off) * 1000 : null;
   s.endLead = (s.sileroEnd - s.end) * 1000;
-  s.wait = off != null ? (s.end - off) * 1000 : null;
-  if (s.offLead != null) tile("t-off", signed(s.offLead));
+  const early = off != null ? s.pauses.filter((t) => t < off).length : null;
+  if (s.offLead != null) {                             // the headline: this turn, then all turns so far
+    state.leads.push(s.offLead);
+    const same = Math.abs(s.offLead) < 1, sorted = [...state.leads].sort((a, b) => a - b), n = sorted.length;
+    const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+    tile("t-off", same ? "0 ms" : `${Math.abs(s.offLead).toFixed(0)} ms`);
+    $("t-off-unit").textContent = same ? "before Silero: same time" : s.offLead > 0 ? "sooner than Silero" : "later than Silero";
+    $("t-off-sub").textContent = n === 1 ? "first turn · the median follows with the next one"
+      : `median ${signed(median)} over ${n} turns · sooner in ${sorted.filter((d) => d >= 1).length} of ${n}`;
+    tile("t-early", `${early}`);
+  }
   tile("t-end", signed(s.endLead));
-  if (s.wait != null) tile("t-wait", `${s.wait.toFixed(0)} ms`);
+  $("t-end-unit").textContent = Math.abs(s.endLead) < 1 ? "as Silero" : s.endLead > 0 ? "sooner than Silero" : "later than Silero";
   const card = document.createElement("article");
   card.className = "turn";
-  const chip = (cls, label, value) => `<span class="chip ${cls}">${label} <b>${value}</b></span>`;
-  card.innerHTML = `<p>Turn ${s.n} · ${s.voiced.toFixed(1)} s of speech · ${s.pauses.length} pauses</p><div class="chips">
-    ${chip("cyan", "speech-off before Silero", s.offLead != null ? signed(s.offLead) : "–")}
-    ${chip("green", "turn end before Silero", signed(s.endLead))}
-    ${chip("violet", "speech-off → turn end", s.wait != null ? `${s.wait.toFixed(0)} ms` : "–")}</div>`;
+  card.innerHTML = `<span>Turn ${s.n} · ${s.voiced.toFixed(1)} s of speech</span>
+    <span>knew you stopped <b class="cyan">${s.offLead != null ? signed(s.offLead) : "–"}</b> sooner</span>
+    <span>turn end <b class="green">${signed(s.endLead)}</b> sooner</span>
+    <span><b class="amber">${early ?? "–"}</b> early pauses</span>`;
   $("turns").prepend(card);
 }
 const signed = (ms) => (Math.abs(ms) < 1 ? "same time" : ms > 0 ? `${ms.toFixed(0)} ms` : `−${(-ms).toFixed(0)} ms`);
 
 // ---------------------------------------------------------------- page text
-function setLive(kind) {
-  const el = $("live-state");
-  el.textContent = { onset: "onset · speech?", speaking: "speaking", pause: "pause · speech-off?", ended: "turn ended",
-                     listening: "listening" }[kind];
-  el.className = kind;
+function setLive(kind) {                              // the status pill while streaming
+  if (state.ws) setStatus({ speaking: "speaking", pause: "pause?", ended: "turn ended" }[kind], "ok");
 }
 function tile(id, text) { const el = $(id); el.textContent = text; el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
 function toast(text) { const t = $("toast"); t.textContent = text; t.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 5000); }
@@ -176,9 +187,9 @@ function resize() {
 }
 new ResizeObserver(resize).observe(canvas);
 
-function now() {
-  const ahead = state.ws ? Math.min(0.05, (performance.now() - state.lastPerf) / 1000) : 0;
-  return state.sent / RATE + ahead;
+function now() {                                     // stream time shown at the right edge
+  if (!state.ws || state.base == null) return state.sent / RATE;
+  return Math.max(state.sent / RATE, Math.min(state.captured / RATE + 0.05, (performance.now() - state.base) / 1000));
 }
 
 function draw() {
@@ -187,10 +198,11 @@ function draw() {
   // A name column on the left; time runs right to "now".
   const gutter = 150, nowX = W - 18, pps = (nowX - gutter) / WINDOW, t1 = now(), t0 = t1 - WINDOW;
   const x = (t) => nowX - (t1 - t) * pps;
-  const A = { top: 14, h: 120, name: "Audio", sub: "dashed: quiet line", color: C.muted };
+  const all = $("details").checked;                  // every event, or just the comparison
+  const A = { top: 14, h: 120, name: "Audio", sub: "what both hear", color: C.muted };
   const P = { top: 150, h: 50, name: "Silero", sub: "speech probability", color: C.violet };
-  const R1 = { top: 232, h: 46, name: "RealtimeVAD", sub: "speech-off ● wait ▮ end", color: C.cyan };
-  const R2 = { top: 322, h: 46, name: "Silero alone", sub: "speech-off ● wait ▮ end", color: C.red };
+  const R1 = { top: 232, h: 46, name: "RealtimeVAD", sub: "10 ms quiet check", color: C.cyan };
+  const R2 = { top: 322, h: 46, name: "Silero alone", sub: "same thresholds", color: C.red };
   A.mid = A.top + A.h / 2;
   g.clearRect(0, 0, W, H);
   prune(t0 - 2);
@@ -225,7 +237,7 @@ function draw() {
   g.fillStyle = "#2d3860"; g.fill(quietPath);
   g.fillStyle = C.cyan; g.fill(voicePath);
   g.save(); g.strokeStyle = C.amber; g.globalAlpha = 0.6; g.setLineDash([4, 4]); g.lineWidth = 1;
-  for (const sign of [-1, 1]) {
+  for (const sign of all ? [-1, 1] : []) {
     g.beginPath(); let first = true;
     for (const f of state.frames) {
       if (f.t < t0 || f.quiet <= 0) continue;
@@ -239,7 +251,7 @@ function draw() {
   // Silero probability, with the 0.45 line below which a frame counts as silent
   const py = (p) => P.top + P.h - p * P.h;
   g.save(); g.setLineDash([3, 4]); g.strokeStyle = "rgba(255,107,122,0.5)";
-  g.beginPath(); g.moveTo(gutter, py(0.45)); g.lineTo(nowX, py(0.45)); g.stroke(); g.restore();
+  g.beginPath(); g.moveTo(gutter, py(0.45)); g.lineTo(nowX, py(0.45)); if (all) g.stroke(); g.restore();
   const vis = state.frames.filter((f) => f.t >= t0);
   if (vis.length > 1) {
     const path = new Path2D();
@@ -263,7 +275,7 @@ function draw() {
     g.strokeStyle = color; g.globalAlpha = 0.55; g.lineWidth = 1.5;
     for (let k = xa - h; k < xb; k += 6) { g.beginPath(); g.moveTo(k, y + h); g.lineTo(k + h, y); g.stroke(); }
     g.restore();
-    if (xb - xa > 92) { g.fillStyle = "#fff"; g.font = "600 10px Inter, sans-serif"; g.fillText(`waits ${((b - a) * 1000).toFixed(0)} ms`, xa + 6, row.top + row.h / 2 + 4); }
+    if (all && xb - xa > 92) { g.fillStyle = "#fff"; g.font = "600 10px Inter, sans-serif"; g.fillText(`waits ${((b - a) * 1000).toFixed(0)} ms`, xa + 6, row.top + row.h / 2 + 4); }
   };
   const off = (row, t, color) => {
     g.save(); g.fillStyle = color; g.shadowColor = color; g.shadowBlur = 12;
@@ -273,16 +285,16 @@ function draw() {
     g.save(); g.fillStyle = color; g.shadowColor = color; g.shadowBlur = 14;
     g.fillRect(x(t) - 2, row.top + 2, 4, row.h - 4); g.restore();
   };
-  const bracket = (a, b, y, text, color) => {
+  const bracket = (a, b, y, text, color, size = 11) => {
     const xa = x(a), xb = x(b);
     g.save(); g.strokeStyle = color; g.lineWidth = 2;
     g.beginPath(); g.moveTo(xa, y - 5); g.lineTo(xa, y); g.lineTo(xb, y); g.lineTo(xb, y + 5); g.stroke(); g.restore();
-    label(text, xb, y + 5, color, 11);
+    if (xb >= gutter) label(text, xb, y + 5, color, size);      // not once it has scrolled out
   };
 
   // onsets: a ring at each "maybe speech" frame. Confirmed ones link to their start
   // confirmation; the rest (grey) never became speech, e.g. a click or a knock.
-  for (const t of state.onsets) {
+  for (const t of all ? state.onsets : []) {
     if (t < t0) continue;
     const s = segs.find((q) => q.confirmed != null &&
       t === state.onsets.filter((o) => o <= q.confirmed + 0.001).pop() && t >= q.start - 0.001);
@@ -301,27 +313,35 @@ function draw() {
     // RealtimeVAD: solid while in speech, amber dots at its pauses
     bar(R1, s.start, rOff ?? s.end ?? t1, C.cyan);
     g.fillStyle = C.amber;
-    for (const t of s.pauses) if (t >= t0 && t !== rOff) { g.beginPath(); g.arc(x(t), R1.top + R1.h / 2, 3, 0, 7); g.fill(); }
+    for (const t of all ? s.pauses : []) if (t >= t0 && t !== rOff) { g.beginPath(); g.arc(x(t), R1.top + R1.h / 2, 3, 0, 7); g.fill(); }
     // Silero alone: same start, solid until its first silent frame
     bar(R2, s.start, sOff ?? s.sileroEnd ?? t1, C.red);
-    if (s.end != null && rOff != null) {
-      wait(R1, rOff, s.end, C.cyan); off(R1, rOff, C.amber); end(R1, s.end, C.cyan);
-      label("turn end", x(s.end), R1.top + R1.h / 2 + 5, C.cyan, 11);
-    } else if (s.end != null) end(R1, s.end, C.cyan);
+    if (s.end != null && rOff != null) {               // the wait and the turn end only with every event shown
+      if (all) { wait(R1, rOff, s.end, C.cyan); end(R1, s.end, C.cyan); }
+      off(R1, rOff, C.amber);
+      if (all) label("turn end", x(s.end), R1.top + R1.h / 2 + 5, C.cyan, 11);
+    } else if (s.end != null && all) end(R1, s.end, C.cyan);
     if (s.sileroEnd != null && sOff != null) {
-      wait(R2, sOff, s.sileroEnd, C.red); off(R2, sOff, C.red); end(R2, s.sileroEnd, C.red);
-      label("turn end", x(s.sileroEnd), R2.top + R2.h / 2 + 5, C.red, 11);
+      if (all) { wait(R2, sOff, s.sileroEnd, C.red); end(R2, s.sileroEnd, C.red); }
+      off(R2, sOff, C.red);
+      if (all) label("turn end", x(s.sileroEnd), R2.top + R2.h / 2 + 5, C.red, 11);
     }
     // the two comparisons, between the rows
     const mid = R1.top + R1.h + 8;
     if (rOff != null && sOff != null) {
       const d = (sOff - rOff) * 1000;
+      if (d >= 1) {                                    // the time won: quiet audio, Silero still says speech
+        const xa = x(rOff), xb = x(sOff);
+        g.save(); g.fillStyle = C.amber; g.globalAlpha = 0.16; g.fillRect(xa, A.top, xb - xa, R2.top + R2.h - A.top);
+        g.globalAlpha = 0.9; g.fillRect(xa - 1, A.top, 2, R1.top + R1.h - A.top);
+        g.fillStyle = C.red; g.fillRect(xb - 1, A.top, 2, R2.top + R2.h - A.top); g.restore();
+      }
       bracket(rOff, sOff, mid - 2, Math.abs(d) < 1 ? "speech-off: same time"
-        : d > 0 ? `speech-off ${d.toFixed(0)} ms sooner` : `speech-off: Silero ${(-d).toFixed(0)} ms sooner`, C.amber);
+        : d > 0 ? `${d.toFixed(0)} ms sooner` : `speech-off: Silero ${(-d).toFixed(0)} ms sooner`, C.amber, 14);
     }
     if (s.end != null && s.sileroEnd != null) {
       const d = (s.sileroEnd - s.end) * 1000;
-      if (Math.abs(d) >= 1) bracket(s.end, s.sileroEnd, mid + 22, `turn end ${Math.abs(d).toFixed(0)} ms ${d > 0 ? "sooner" : "later"}`, C.green);
+      if (all && Math.abs(d) >= 1) bracket(s.end, s.sileroEnd, mid + 22, `turn end ${Math.abs(d).toFixed(0)} ms ${d > 0 ? "sooner" : "later"}`, C.green);
     }
   }
   g.restore();
@@ -337,11 +357,13 @@ function prune(before) {
   while (state.onsets.length && state.onsets[0] < before) state.onsets.shift();
 }
 function reset() {
-  Object.assign(state, { sent: 0, captured: 0, pending: new Float32Array(0), blockAcc: [], blocks: [], frames: [], current: null,
-                         inferMs: [], onsets: [] });
+  Object.assign(state, { sent: 0, captured: 0, pending: new Float32Array(0), blockAcc: [], blocks: [], frames: [], current: null, base: null,
+                         inferMs: [], onsets: [], leads: [] });
   state.segments = new Map();
-  $("turns").innerHTML = ""; setLive("listening");
-  ["t-off", "t-end", "t-wait", "t-cpu"].forEach((id) => ($(id).textContent = "–"));
+  $("turns").innerHTML = "";
+  ["t-off", "t-end", "t-early", "t-cpu"].forEach((id) => ($(id).textContent = "–"));
+  $("t-off-unit").textContent = $("t-end-unit").textContent = "sooner than Silero";
+  $("t-off-sub").textContent = "Talk, then stop. Both detectors hear the same audio.";
 }
 
 // ---------------------------------------------------------------- controls
@@ -365,6 +387,7 @@ function sendPauseMs() {                              // both sliders
 $("pause-ms").oninput = sendPauseMs;
 $("start-ms").oninput = sendPauseMs;
 $("start-p").oninput = sendPauseMs;
+$("details").onchange = () => document.body.classList.toggle("all", $("details").checked);
 $("mic").onclick = () => toggle("mic");
 $("sample").onclick = () => toggle("sample");
 requestAnimationFrame(draw);

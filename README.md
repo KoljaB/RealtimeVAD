@@ -131,9 +131,12 @@ python benchmarks/speech_off_lead.py <wav dir> out.json
 
 ## Live demo
 
-[demo/](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) shows, live from your microphone, when RealtimeVAD
-notices that you stopped talking and when Silero alone would have, on one
-scrolling timeline.
+[![RealtimeVAD demo: three turns, speech-off before Silero each time](https://raw.githubusercontent.com/KoljaB/RealtimeVAD/main/demo/demo.jpg)](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/demo.mp4)
+
+*[Watch the 13-second video](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/demo.mp4) (with sound). It uses a synthetic voice and shows a median lead of 92 ms; the 110 ms above is the median on real voice-assistant turns.*
+
+[demo/](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) runs this page on your own microphone. It shows, turn by turn, how much sooner
+RealtimeVAD knew that you stopped than Silero alone, on the same audio.
 
 ## Development
 

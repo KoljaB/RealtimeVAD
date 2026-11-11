@@ -1,24 +1,37 @@
 # RealtimeVAD live demo
 
-Speak into the microphone and stop. The page shows when RealtimeVAD notices that
-you stopped, and when Silero alone would have, on one scrolling timeline.
+[![The demo page after three turns](demo.jpg)](demo.mp4)
 
-- **Audio**: the waveform and the quiet threshold, which adapts to the room.
-- **Silero**: its speech probability per 32 ms frame, with the 0.45 line below
-  which a frame counts as silent.
-- **RealtimeVAD**: a green ring at every onset (maybe speech: the first confident
-  frame), linked to the moment the start is confirmed; grey rings never became
-  speech (a click, a knock). Then a yellow dot at every pause (the audio went quiet for one
-  10 ms block), then speech-off ●, the wait to be sure, and the turn end ▮.
-- **Silero alone**: the same probabilities and thresholds without the 10 ms
-  clock: speech-off at its first silent frame, then its own wait and turn end.
+*13 seconds, with sound: [demo.mp4](demo.mp4). The voice is synthetic: this clip shows a median lead of 92 ms, against 110 ms on real voice-assistant turns. The lead depends on the voice and on how each sentence ends.*
 
-Between the two rows the page marks how much sooner RealtimeVAD knew, for
-speech-off and for the turn end. RealtimeVAD can only be sooner or the same,
-never later. Two sliders: how long the audio must stay quiet before a pause counts
-(fewer pauses, later speech-off), and how long Silero must keep hearing speech
-before a start is confirmed (fewer false starts from clicks, later start; the
-audio still reaches back to the onset).
+Speak into the microphone and stop. The page shows how much sooner RealtimeVAD
+knew that you stopped than Silero alone, on the same audio.
+
+- **The big number**: the lead for your last turn, then the median over all
+  turns so far and in how many of them RealtimeVAD was sooner.
+- **Turn end**: how much sooner RealtimeVAD closed the turn. It can only be
+  sooner or the same, never later.
+- **Early pauses**: pauses that fired while you kept talking. That is the price
+  of reacting this early.
+- **Timeline**: the audio, Silero's speech probability, and one row each for
+  RealtimeVAD and Silero alone. A dot marks where each one knows you stopped;
+  the shaded band between the two dots is the time RealtimeVAD won.
+
+"Silero alone" uses the same probabilities and thresholds without the 10 ms
+quiet check: it knows at its first silent frame.
+
+**Settings** (below the timeline) holds the rest:
+
+- **Show every event**: onsets (a ring at the first confident frame, grey if it
+  never became speech), every pause, the wait after speech-off, both turn ends,
+  the quiet threshold and Silero's 0.45 line.
+- **Pause after**: how long the audio must stay quiet before a pause counts
+  (fewer pauses, later speech-off).
+- **Speech-on**: how long and how surely Silero must hear speech before a start
+  is confirmed (fewer false starts from clicks, later start; the audio still
+  reaches back to the onset).
+
+Add `?window=4` to the address to zoom the timeline to 4 seconds (default 8).
 
 ## Run
 
@@ -43,6 +56,7 @@ smaller lead.
 |---|---|
 | `server.py` | Feeds browser audio to RealtimeVAD and works out the Silero-alone decisions from the same frames |
 | `static/` | The page: capture worklet, canvas timeline, tiles and turn cards |
+| `demo.mp4`, `demo.jpg` | The recording above and its still |
 
 All times on the page are stream time (seconds of audio sent), the same clock
 the server stamps on every event.

@@ -19,47 +19,51 @@
     </div>
     <div class="controls">
       <span id="status" class="status">idle</span>
-      <label class="slider" title="How long the audio must stay quiet before RealtimeVAD calls it a pause (speech-off). Longer: fewer pauses, later speech-off.">
-        Pause after <input id="pause-ms" type="range" min="10" max="300" step="10" value="10"> <b id="pause-ms-value">10 ms</b> quiet
-      </label>
-      <label class="slider" title="After an onset, Silero must stay at or above this probability for this long before RealtimeVAD confirms the start. Stricter: clicks and knocks are rejected, the start is confirmed later (its audio still reaches back to the onset).">
-        Speech-on: Silero ≥ <input id="start-p" type="range" min="0.45" max="0.95" step="0.05" value="0.8"> <b id="start-p-value">0.80</b>
-        for <input id="start-ms" type="range" min="32" max="640" step="32" value="320"> <b id="start-ms-value">320 ms</b>
-      </label>
       <button id="sample" class="ghost">Play sample</button>
       <button id="mic" class="primary"><span class="dot"></span>Start microphone</button>
     </div>
   </header>
 
   <section class="tiles">
-    <div class="tile cyan"><label>Speech-off before Silero</label><b id="t-off">–</b><small>last pause vs. Silero's first silent frame</small></div>
-    <div class="tile green"><label>Turn end before Silero</label><b id="t-end">–</b><small>same thresholds, same audio</small></div>
-    <div class="tile violet"><label>Speech-off → turn end</label><b id="t-wait">–</b><small>RealtimeVAD waits this long to be sure</small></div>
-    <div class="tile amber"><label>CPU per 32 ms frame</label><b id="t-cpu">–</b><small>one thread, no GPU</small></div>
+    <div class="tile hero cyan">
+      <label>RealtimeVAD knew you stopped</label>
+      <p><b id="t-off">–</b><span id="t-off-unit">sooner than Silero</span></p>
+      <small id="t-off-sub">Talk, then stop. Both detectors hear the same audio.</small>
+    </div>
+    <div class="tile green"><label>Turn end</label><b id="t-end">–</b><small id="t-end-unit">sooner than Silero</small></div>
+    <div class="tile amber"><label>Early pauses</label><b id="t-early">–</b><small>fired, then you kept talking</small></div>
   </section>
 
   <section class="stage">
     <canvas id="scope"></canvas>
     <div class="legend">
-      <span class="k onset">onset: maybe speech (grey: never confirmed, e.g. a click)</span>
-      <span class="k pause">RealtimeVAD pause: audio went quiet (speech-off?)</span>
-      <span class="k quiet">quiet threshold, adapts to the room</span>
-      <span class="k silero">Silero's silence line (0.45)</span>
-      <span class="k end">turn end sooner</span>
+      <span class="k off">● knows you stopped</span>
+      <span class="k soff">● Silero knows</span>
+      <span class="k won">shaded: how much sooner RealtimeVAD knew</span>
+      <span class="k end detail">▮ turn end, after the striped wait</span>
+      <span class="k pause detail">small dot: pause, speech went on</span>
+      <span class="k onset detail">ring: onset (grey: never confirmed)</span>
+      <span class="k quiet detail">dashed: quiet threshold and Silero's 0.45 line</span>
     </div>
   </section>
 
-  <section class="live">
-    <div class="live-label"><span id="live-state" class="listening">listening</span></div>
-    <div class="live-text"><span class="hint">Press <b>Start microphone</b> and talk, then stop. Watch when each VAD notices.</span></div>
-  </section>
+  <details class="tuning">
+    <summary>Settings</summary>
+    <label class="slider" title="How long the audio must stay quiet before RealtimeVAD calls it a pause (speech-off). Longer: fewer pauses, later speech-off.">
+      Pause after <input id="pause-ms" type="range" min="10" max="300" step="10" value="10"> <b id="pause-ms-value">10 ms</b> quiet
+    </label>
+    <label class="slider" title="After an onset, Silero must stay at or above this probability for this long before RealtimeVAD confirms the start. Stricter: clicks and knocks are rejected, the start is confirmed later (its audio still reaches back to the onset).">
+      Speech-on: Silero ≥ <input id="start-p" type="range" min="0.45" max="0.95" step="0.05" value="0.8"> <b id="start-p-value">0.80</b>
+      for <input id="start-ms" type="range" min="32" max="640" step="32" value="320"> <b id="start-ms-value">320 ms</b>
+    </label>
+    <label class="slider"><input id="details" type="checkbox"> Show every event on the timeline</label>
+  </details>
 
   <section id="turns" class="turns"></section>
 
   <footer>
-    RealtimeVAD decides start, pause and end on 10 ms blocks and 32 ms Silero frames ·
-    "Silero alone" uses the same probabilities and thresholds without the 10 ms clock ·
-    every time on this page is stream time from the server
+    "Silero alone" uses the same probabilities and thresholds, without RealtimeVAD's 10 ms quiet check ·
+    CPU per 32 ms frame: <span id="t-cpu">–</span>, one thread
   </footer>
 
   <div id="toast" class="toast"></div>
