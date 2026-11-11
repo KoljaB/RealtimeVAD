@@ -25,7 +25,7 @@ quiet, you get an event, long before Silero's probability has fallen.
 
 https://github.com/user-attachments/assets/d01900dd-9601-4f3d-8c88-db55e8bc83a1
 
-It uses a synthetic voice and shows a median lead of 92 ms; the 110 ms above is the median on real voice-assistant turns.
+The video uses a synthetic voice and shows a median lead of 92 ms. The 110 ms above is the median on real voice-assistant turns.
 
 [demo/](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) runs this page on your own microphone. It shows, turn by turn, how much sooner
 RealtimeVAD knew that you stopped than Silero alone, on the same audio.
