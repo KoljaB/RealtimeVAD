@@ -1,7 +1,3 @@
-
-
-https://github.com/user-attachments/assets/3a004c88-c3e8-45b9-b9ff-3f44ac47d857
-
 # RealtimeVAD
 
 *Know that the speaker stopped, about 110 ms before Silero does.*
@@ -134,6 +130,9 @@ python benchmarks/speech_off_lead.py <wav dir> out.json
 - 16 kHz mono only.
 
 ## Live demo
+
+
+https://github.com/user-attachments/assets/3a004c88-c3e8-45b9-b9ff-3f44ac47d857
 
 https://github.com/user-attachments/assets/d01900dd-9601-4f3d-8c88-db55e8bc83a1
 
