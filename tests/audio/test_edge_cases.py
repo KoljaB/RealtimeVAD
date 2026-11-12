@@ -87,6 +87,10 @@ if lab.available():
     TURN_START = [(case(f"turn-start/{c['id']}", [(c["file"], [])]), c) for c in lab.clips("turn_start")]
     HESITATION = [(case(f"hesitation/{c['id']}", [(c["file"], [("pad", 0, 1.0)])]), c) for c in lab.clips("hesitation")]
 
+    # 3.5 s of steady room noise after the speech: Silero is restored about a second into it
+    ROOM_PAUSE = {name: [(single(f"room-pause-{name}", c, ("level", -30), ("pad", 0, 3.5), *fx), c) for c in S24]
+                  for name, fx in (("white-52", [("white", -52)]), ("white-60", [("white", -60)]),
+                                   ("fan", [("noise", NOISE["fan_1"]["file"], 25)]))}
     # a soft word ending: the last 0.4 s of the speech fade by 15 dB (set per clip in the test)
     # streams of several utterances
     TALK = [(c["file"], [("level", -30), ("pad", 0.3, 1.5), ("white", -65)]) for c in S24[::4]]
@@ -354,6 +358,21 @@ def test_quiet_speaker_after_a_loud_one(runs, guard):
         found += lab.covered(r, ref, offset) > 0.9
     guard("quiet second speakers found, of 8", found, ">=", 7)
     guard("ends decided while the quiet speaker talks", premature, "<=", premature_silero + 1)
+    guard.done()
+
+
+def test_no_phantom_speech_in_the_room_after_the_user(runs, guard):
+    """The user speaks at -30 dBFS, then 3.5 s of steady room noise (white at -52 and -60 dBFS,
+    a fan 25 dB below the speech). Silero's recovery about a second into it must not make
+    the noise sound like speech (up to 0.0.5 it restored a state from inside the speech,
+    which scored the next frames ~0.9 whatever they held)."""
+    refs, results = runs
+    for name, keyed in ROOM_PAUSE.items():
+        phantom = 0
+        for key, clip in keyed:
+            off = refs[clip["file"]]["off"] + OFF
+            phantom += sum(s["start"] > off + 0.3 for s in results[key]["segments"])
+        guard(f"{name}: segments that start in the room noise after the speech, of 24 clips", phantom, "<=", 0)
     guard.done()
 
 

@@ -18,9 +18,11 @@ class Silero:
     On a long stream the recurrent state can drift into an attractor where the
     probability stays near 0 even through loud speech (low babble, near-silent
     pauses). After ``restore_s`` of p < 0.1 the state is put back to where the
-    model last heard confident speech (p >= 0.9), or zeroed before any. A zero
-    state is the worse restart point: it scores the next utterance lower and
-    later. Costs no extra inference; 0 disables it.
+    model last let go of confident speech (the first p < 0.5 after p >= 0.9), or
+    zeroed before any. A zero state is the worse restart point: it scores the
+    next utterance lower and later. A state from inside confident speech is
+    worse still: it scores whatever follows the restore as speech for a few
+    frames. Costs no extra inference; 0 disables it.
     """
 
     def __init__(self, model: str | Path = MODEL, threads: int = 1, restore_s: float = 1.0) -> None:
@@ -43,6 +45,7 @@ class Silero:
         self._context = np.zeros((1, 64), dtype=np.float32)
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
         self._snapshot = None
+        self._settling = False  # standalone rule: heard confident speech, not yet let go of it
         self._quiet = 0
 
     def __call__(self, frame: np.ndarray) -> float:
@@ -55,6 +58,9 @@ class Silero:
         p = float(np.asarray(p).reshape(-1)[0])
         if self._restore_frames:  # standalone rule; inside VAD, VAD decides both (see vad.py)
             if p >= 0.9:
+                self._settling = True
+            elif self._settling and p < 0.5:
+                self._settling = False
                 self.snapshot()
             self._quiet = self._quiet + 1 if p < 0.1 else 0
             if self._quiet >= self._restore_frames:
@@ -66,7 +72,7 @@ class Silero:
         self._snapshot = (self._state, self._context)
 
     def restore(self) -> None:
-        """Put the state back to the last confident speech (zeros before any); affects the next frame."""
+        """Put the state back to the snapshot (zeros before any); affects the next frame."""
         self._quiet = 0
         self.restores += 1
         if self._snapshot is None:

@@ -99,7 +99,8 @@ Delivered with **end**:
   within ~0.2 s when it ignores audio as loud as the speaker. Near-silence never
   triggers a recovery, and none happens during the assistant's own playback.
 - A recovery never makes it hear speech that isn't there: it returns to how the
-  model sounded after the *user's* speech, never after the assistant's own voice.
+  model sounded just after the *user's* speech ended (not during it, and never
+  after the assistant's own voice).
 - The assistant's own voice (echo) never starts a segment by way of a recovery,
   and silence after the assistant speaks never produces a phantom segment.
 - A recovery comes on the same frame with and without the quiet clock, so the

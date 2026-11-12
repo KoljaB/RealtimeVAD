@@ -600,14 +600,61 @@ def test_restore_point_is_never_taken_from_playback_echo():
         def snapshot(self):
             self.snapshots += 1
 
-    probs = [0.95] * 10 + [0.95] * 10
+    probs = [0.95] * 10 + [0.2] + [0.95] * 10 + [0.2]
     m = Model(probs)
-    vad = VAD(probability=m, early_end=True, end_s=0.24, quiet_end_s=0.24)
-    vad.feed(level(10 * FRAME, 0.1))
+    vad = VAD(probability=m, end_s=0.24, quiet_end_s=0.24)
+    vad.feed(level(11 * FRAME, 0.1))
     user = m.snapshots
-    assert user == 10  # the user's confident speech sets the restore point
-    vad.feed(level(10 * FRAME, 0.1), playback=True)
-    assert m.snapshots == user  # the assistant's own voice (echo) never does
+    assert user == 1  # where Silero lets go of the user's confident speech: the restore point
+    vad.feed(level(11 * FRAME, 0.1), playback=True)
+    assert m.snapshots == user  # the assistant's own voice (echo) never sets it
+
+
+class Recurrent(Restorable):
+    """Scripted probabilities with Silero's habit: a state restored from inside confident
+    speech scores the next frames as speech, whatever they hold (measured on room noise
+    25 dB below the speaker: 0.92, 0.85, 0.73, 0.63, 0.49, 0.29)."""
+
+    TAIL = [0.92, 0.85, 0.73, 0.63, 0.49, 0.29]
+
+    def __init__(self, probs):
+        super().__init__(probs)
+        self.p, self.saved, self.replay = 0.0, None, []
+
+    def __call__(self, frame):
+        scripted = next(self.it, 0.0)
+        self.p = self.replay.pop(0) if self.replay else scripted
+        return self.p
+
+    def snapshot(self):
+        self.saved = self.p
+
+    def restore(self):
+        super().restore()
+        self.replay = list(self.TAIL) if self.saved is not None and self.saved >= 0.9 else []
+
+
+def test_restore_never_makes_it_hear_speech_that_isnt_there():
+    # The user speaks, then 2.6 s of steady room noise at -52 dBFS that Silero scores ~0.
+    # A second in, the quiet rule restores Silero; the noise after it must start nothing.
+    segs = SPEECH + [(80, 0.0, 2.5e-3)]
+    m = Recurrent([p for n, p, _ in segs for _ in range(n)])
+    vad = VAD(probability=m, end_s=0.24, quiet_end_s=0.24)
+    ev = [e for n, _, amp in segs for e in vad.feed(level(n * FRAME, amp))]
+    assert m.restores == 1
+    assert kinds(ev) == ["start", "pause", "end"]
+
+
+def test_speech_right_after_a_restore_starts_as_without_it():
+    for after in range(0, 8):  # the user speaks again 0-7 frames after the restore
+        segs = SPEECH + [(42 + after, 0.0, 2.5e-3), (2, 0.95, 0.1), (8, 0.9, 0.1)]
+        probs = [p for n, p, _ in segs for _ in range(n)]
+        starts = []
+        for model in (Recurrent(probs), scripted(probs)):  # with and without the restore
+            vad = VAD(probability=model, end_s=0.24, quiet_end_s=0.24)
+            ev = vad.feed(np.concatenate([level(n * FRAME, a) for n, _, a in segs]))
+            starts.append([e.time for e in ev if e.kind == "start"])
+        assert starts[0] == starts[1], after
 
 
 def test_quiet_restore_fires_once_per_pause():
@@ -662,3 +709,15 @@ def test_confirm_threshold_does_not_change_continuing_speech():
     # once started, speech continues above continue_threshold as before
     ev = run([(1, 0.95, 0.1), (4, 0.9, 0.1), (6, 0.5, 0.1)], start_s=0.16, confirm_threshold=0.8)
     assert kinds(ev) == ["start"]
+
+
+def test_loud_noise_after_the_turn_starts_nothing_however_often_silero_is_restored():
+    # After the user's words: 1.3 s of noise as loud as the speaker that Silero scores ~0. The
+    # "ignores speech-loud audio" rule restores it every 0.19 s there; none of those restores
+    # may open a segment (it did: a Japanese sentence with loud clicks in its tail, end_s 0.55).
+    segs = [(30, 0.0, 1e-3)] + SPEECH + [(50, 0.0, 0.05)]  # a quiet room first: the idle floor
+    m = Recurrent([p for n, p, _ in segs for _ in range(n)])
+    vad = VAD(probability=m, end_s=0.55)
+    ev = [e for n, _, amp in segs for e in vad.feed(level(n * FRAME, amp))]
+    assert m.restores >= 3
+    assert kinds(ev) == ["start", "pause", "end"]

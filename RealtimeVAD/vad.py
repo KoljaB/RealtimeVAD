@@ -235,6 +235,7 @@ class VAD:
         self._tail = False  # waiting for Silero to drop after an early end
         self._low = self._deaf = 0  # frames of p < 0.1 over real audio / over speech-loud audio
         self._quiet_restored = False  # the quiet rule already restored in this pause
+        self._settling = False  # Silero heard the user's confident speech and has not let go of it yet
         self._in_speech = False
         self._idle = 0
         self._streak = 0
@@ -503,18 +504,29 @@ class VAD:
                 db = max(floor_db, min(db, self._speech_db - self.speech_margin_db))
             self._quiet = 10.0 ** (db / 20.0)
         # Silero's recurrent state drifts in long noisy or near-silent stretches until it is
-        # "deaf" (p ~ 0 through loud speech). Restore the last confident-speech state after a
-        # second of p < 0.1 over real audio (gated digital silence doesn't drift it, and a
-        # restore there only disturbs the next onset), never on a frame that sounds like an
+        # "deaf" (p ~ 0 through loud speech). Restore a state from just after the user's speech
+        # after a second of p < 0.1 over real audio (gated digital silence doesn't drift it, and
+        # a restore there only disturbs the next onset), never on a frame that sounds like an
         # onset; or at once when Silero has ignored speech-loud audio for deaf_s.
         #
-        # The restore point is the state after the *user's* confident speech, never after
-        # the assistant's own voice: a state that last heard playback echo scores following
-        # room noise as speech (p ~0.96 decaying over 0.4 s), which opens phantom segments.
+        # The restore point is the state on the first frame where Silero lets go of the
+        # user's confident speech (p below continue_threshold): it has just heard speech, so
+        # it hears the next speech at once, and it is no longer in speech. A state taken
+        # during confident speech replays a speech tail onto whatever follows the restore
+        # (steady room noise 25 dB below the speaker: p ~0.92 decaying over 0.3 s), and that
+        # opened phantom segments. Never after the assistant's own voice either: a state that
+        # last heard playback echo scores following room noise as speech (p ~0.96 decaying
+        # over 0.4 s).
         restore = getattr(self._p, "restore", None)
         snapshot = getattr(self._p, "snapshot", None)
-        if p >= self.start_threshold and not echo and snapshot is not None:
-            snapshot()
+        if echo:
+            self._settling = False
+        elif p >= self.start_threshold:
+            self._settling = True
+        elif self._settling and p < self.continue_threshold:
+            self._settling = False
+            if snapshot is not None:
+                snapshot()
         # After an early end Silero's own count would still be running. Until it would have
         # ended the segment too, this counts as speech here, so a restore comes exactly when it
         # would without the quiet clock and the probabilities that follow are the same.
