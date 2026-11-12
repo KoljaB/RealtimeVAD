@@ -11,3 +11,8 @@ venv/
 htmlcov/
 *.wav
 !tests/data/*.wav
+.venv-*/
+tests/audio/data/
+tests/audio/_cache/
+.livekit-src/
+.livekit-notes/
