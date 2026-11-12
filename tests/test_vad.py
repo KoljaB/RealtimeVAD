@@ -63,16 +63,32 @@ def test_quiet_clock_beats_lagging_silero():
     assert ev[2].segment.speech_end == pytest.approx(t_quiet)
 
 
-def test_click_breaks_quiet_clock_and_silero_takes_over():
+def test_click_restarts_the_quiet_count():
+    # A click (one loud 10 ms block, too short to be sound that re-arms) inside the quiet after
+    # a word: the count starts again at the next quiet block, without a second pause event.
+    # It used to stop for good there, which left a third of all real turn ends to Silero.
     probs = [0.95] * 2 + [0.9] * 8 + [0.6] * 4 + [0.1] * 12
     audio = np.full(26 * FRAME, 0.0, dtype=np.float32)
     audio[: 10 * FRAME] = 0.1
     click = 12 * FRAME
-    audio[click : click + 160] = 0.1  # one 10 ms loud block, < 64 ms: no rearm
+    audio[click : click + 160] = 0.1
     ev = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24).feed(audio)
     assert kinds(ev) == ["start", "pause", "end"]
-    assert ev[-1].time == pytest.approx(22 * F)  # Silero: 8 silent frames after frame 13
-    assert ev[-1].segment.speech_end == pytest.approx(14 * F)
+    again = 6560 / 16000  # the click (samples 6144-6304) touches two blocks; the next one ends here
+    assert ev[-1].segment.speech_end == pytest.approx(again)
+    assert ev[-1].time == pytest.approx(again + 0.24)  # Silero alone: 22 frames = 0.704 s
+    assert ev[-1].time < 22 * F
+
+
+def test_clicks_that_keep_coming_leave_the_end_to_silero():
+    # A click every 0.2 s never leaves 0.24 s of unbroken quiet: Silero's count ends it.
+    probs = [0.95] * 2 + [0.9] * 8 + [0.6] * 4 + [0.1] * 12
+    audio = np.full(26 * FRAME, 0.0, dtype=np.float32)
+    audio[: 10 * FRAME] = 0.1
+    for at in range(10 * FRAME + 1600, 26 * FRAME - 160, 3200):
+        audio[at : at + 160] = 0.1
+    ev = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24).feed(audio)
+    assert ev[-1].kind == "end" and ev[-1].time == pytest.approx(22 * F)
 
 
 def test_sustained_energy_rearms_quiet_clock():
@@ -200,6 +216,113 @@ def test_soft_speech_is_never_quiet():
     assert kinds(ev) == ["start", "pause"]
 
 
+QUIET = [(2, 0.95, 0.004), (30, 0.9, 0.004)]  # a quiet speaker at -48 dBFS (a phone line), ~1 s
+
+
+def test_soft_ending_of_a_quiet_speaker_is_not_silence():
+    # The word ending is at -60 dBFS: below quiet_rms (-54), but only 12 dB under this speaker.
+    # A fixed floor would call it silence and end 0.24 s into it; the floor follows the speaker
+    # (20 dB below = -68 dBFS), so the segment stays open for all 0.64 s of it.
+    soft_end = [(20, 0.9, 0.001)]
+    assert kinds(run(QUIET + soft_end)) == ["start"]
+    fixed = run(QUIET + soft_end, floor_margin_db=None)  # the old fixed floor cuts it
+    assert kinds(fixed) == ["start", "pause", "end"]
+    assert fixed[-1].time == pytest.approx(32 * F + 0.01 + 0.24, abs=0.011)
+
+
+def test_quiet_speaker_still_ends_early_on_silence():
+    # After the same quiet speaker the line goes silent (-80 dBFS) while Silero still says
+    # "voiced": the quiet clock ends the segment 0.24 s later, as at normal level.
+    ev = run(QUIET + [(20, 0.6, 0.0001)])
+    assert kinds(ev) == ["start", "pause", "end"]
+    assert ev[1].time == pytest.approx(32 * F + 0.01, abs=0.011)  # pause within one 10 ms block
+    assert ev[-1].time == pytest.approx(ev[-1].segment.speech_end + 0.24)
+
+
+def test_floor_is_unchanged_for_a_normal_level_speaker():
+    # -20 dBFS speech: 20 dB below is -40 dBFS, above quiet_rms, so quiet_rms stays the floor.
+    # Audio at -52 dBFS (above -54) is not quiet with or without the margin; at -56 it is.
+    for kw in ({}, {"floor_margin_db": None}):
+        assert kinds(run(SPEECH + [(20, 0.6, 0.0025)], **kw)) == ["start"]
+        ev = run(SPEECH + [(20, 0.6, 0.0016)], **kw)
+        assert kinds(ev) == ["start", "pause", "end"]
+        assert ev[-1].time == pytest.approx((10 * FRAME + 160) / 16000 + 0.24)
+
+
+def test_floor_follows_the_speaker_within_a_second_of_speech():
+    # After a loud speaker (-20 dBFS) a quiet one (-48 dBFS) talks for 3 s; the learned level
+    # must have come down far enough that their -60 dBFS ending is no longer silence.
+    ev = run(SPEECH + [(12, 0.1, 0.0)] + [(2, 0.95, 0.004), (92, 0.9, 0.004), (20, 0.9, 0.001)])
+    assert kinds(ev) == ["start", "pause", "end", "start"]
+
+
+def test_soft_start_after_four_frames_at_half_confidence():
+    # A hum or a phone voice that Silero never scores 0.9: four frames (0.128 s) at 0.5 start it.
+    ev = run([(3, 0.1, 0.0), (10, 0.6, 0.05)], onset_events=True)
+    assert kinds(ev) == ["onset", "start"]
+    assert ev[1].time == pytest.approx(4 * F)  # end of the first of the four frames
+    assert run([(3, 0.1, 0.0), (3, 0.6, 0.05), (3, 0.1, 0.05)]) == []  # three frames are not enough
+    assert run([(3, 0.1, 0.0), (10, 0.6, 0.05)], soft_start_s=None) == []
+
+
+def test_soft_start_is_never_weaker_than_the_debounce():
+    # A longer start_s or a higher confirm_threshold also binds the soft start.
+    room = [(3, 0.1, 0.0)]
+    assert run(room + [(9, 0.6, 0.05)], start_s=0.3) == []  # 0.3 s are 10 frames
+    assert kinds(run(room + [(10, 0.6, 0.05)], start_s=0.3)) == ["start"]
+    assert run(room + [(10, 0.6, 0.05)], confirm_threshold=0.8) == []
+    assert kinds(run(room + [(10, 0.85, 0.05)], confirm_threshold=0.8)) == ["start"]
+
+
+def test_soft_start_needs_audio_louder_than_the_room():
+    # Steady noise that Silero is unsure about (a fan, babble) sits at the idle floor: no start.
+    assert run([(40, 0.6, 0.05)]) == []
+    assert run([(20, 0.1, 0.05), (20, 0.6, 0.06)]) == []  # 1.6 dB over the room is not "clearly"
+    assert kinds(run([(20, 0.1, 0.005), (20, 0.6, 0.05)])) == ["start"]  # 20 dB over it is
+
+
+def test_soft_segment_learns_its_level_and_keeps_a_soft_ending():
+    # A quiet phone voice (-48 dBFS) at p 0.7 throughout: its -60 dBFS ending is not silence.
+    ev = run([(3, 0.1, 0.0), (30, 0.7, 0.004), (20, 0.7, 0.001)])
+    assert kinds(ev) == ["start"]
+
+
+def test_normalize_amplifies_only_what_silero_sees():
+    # A phone voice at -48 dBFS that Silero scores 0.6. With normalize_to_dbfs=-30 the frames
+    # the model gets rise by 2 dB per frame to -30 dBFS; the segment's audio stays as it came.
+    seen = []
+
+    def model(frame):
+        seen.append(20 * math.log10(float(np.sqrt(np.mean(frame * frame))) + 1e-12))
+        return 0.6 if len(seen) > 3 else 0.1
+
+    quiet = np.concatenate((np.zeros(3 * FRAME, np.float32), np.full(40 * FRAME, 0.004, np.float32)))
+    vad = VAD(probability=model, normalize_to_dbfs=-30.0)
+    assert kinds(vad.feed(quiet)) == ["start"]
+    assert seen[3] == pytest.approx(-48, abs=0.1) and seen[-1] == pytest.approx(-30, abs=0.1)
+    assert max(b - a for a, b in zip(seen[3:], seen[4:])) <= 2.01
+    assert float(np.max(np.abs(vad.audio()))) == pytest.approx(0.004)
+    seen.clear()
+    VAD(probability=model).feed(quiet)  # off by default
+    assert seen[-1] == pytest.approx(-48, abs=0.1)
+
+
+def test_normalize_never_clips_and_leaves_normal_levels_alone():
+    seen = []
+
+    def model(frame):
+        seen.append(float(np.max(np.abs(frame))))
+        return 0.9
+
+    soft_then_loud = np.concatenate((np.zeros(3 * FRAME, np.float32), np.full(20 * FRAME, 0.004, np.float32),
+                                     np.full(5 * FRAME, 0.4, np.float32)))
+    VAD(probability=model, normalize_to_dbfs=-30.0).feed(soft_then_loud)
+    assert max(seen) <= 0.51  # the loud frames right after the soft ones stay below -6 dBFS peak
+    seen.clear()
+    VAD(probability=model, normalize_to_dbfs=-30.0).feed(np.full(20 * FRAME, 0.1, np.float32))  # -20 dBFS: no gain
+    assert max(seen) == pytest.approx(0.1)
+
+
 def test_silero_tail_after_early_end_does_not_start_a_segment():
     ev = run(SPEECH + [(20, 0.6, 0.0), (5, 0.95, 0.0)])
     assert kinds(ev) == ["start", "pause", "end"]  # the high tail over silence opens nothing
@@ -258,6 +381,23 @@ def test_silero_restore_after_a_second_of_low_p_over_real_audio():
     m = Restorable([p for n, p, _ in segs for _ in range(n)])
     feed(m, segs)
     assert m.restores == 1
+
+
+def test_restore_comes_when_it_would_without_the_quiet_clock():
+    # Silero says "voiced" 4 frames into the silence, then hears nothing over room noise. The
+    # quiet clock ends the segment early; the second of "nothing" that leads to a restore still
+    # counts from where Silero's own count would have ended it, so both restore on the same frame
+    # and Silero's probabilities stay the same with and without the quiet clock.
+    segs = SPEECH + [(4, 0.6, 0.0), (60, 0.0, 1e-3)]
+
+    def restored_at(**kw):
+        m = Restorable([p for n, p, _ in segs for _ in range(n)])
+        vad = VAD(probability=m, end_s=0.24, quiet_end_s=0.24, **kw)
+        for i, frame in enumerate(np.concatenate([np.full(n * FRAME, a, dtype=np.float32) for n, _, a in segs]).reshape(-1, FRAME)):
+            vad.feed(frame)
+            if m.restores:
+                return i
+    assert restored_at() == restored_at(quiet_rms=0) is not None
 
 
 def test_silero_restore_when_it_ignores_speech_loud_audio():

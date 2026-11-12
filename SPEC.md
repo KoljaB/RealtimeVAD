@@ -11,6 +11,7 @@ actually goes quiet.
 ## Events
 - **onset** (optional): speech may have begun. It comes at the first confident speech frame, so work can start early; a click or a knock can cause one too. Only **start** confirms it.
 - **start**: speech has begun. It needs about 64 ms of confident speech, so short noises and single blips don't trigger it. That debounce is configurable, also while running: its length, and the speech probability every frame of it must keep (by default the continue threshold). A longer, stricter one rejects clicks and knocks, whose probability fades out within a few frames; the segment's audio still reaches back to the onset.
+  - Speech the model is never confident about (a short "mm-hmm", a quiet or narrowband voice) starts a segment too, once the model has held half confidence for about 0.13 s over audio clearly louder than the room. This soft start is never weaker than the debounce above (at least as long, every frame at or above the same probability), it never fires on steady noise the model is merely unsure about, and it can be turned off.
 - **pause**: the speaker may have stopped. It comes at the first sign of silence (within ~10 ms) so speculative work can begin early. It doesn't end the speech.
 - **end**: the speech segment is over. Its timing:
   - It comes 0.24 s after the audio went quiet (0.28 s when room noise has
@@ -18,10 +19,19 @@ actually goes quiet.
     counts), or 0.24 s after the speech model notices the silence, whichever
     is first. So it's never later than the speech model alone would end it.
   - Speech that resumes before then cancels it, even very soft speech.
-  - A short click or noise doesn't end the segment, and doesn't restart the silence count either.
+  - A short click or noise doesn't end the segment. It starts the quiet count
+    again (the end needs 0.24 s of unbroken quiet after it) and leaves the
+    speech model's own count alone, so the end still comes no later than the
+    model alone would give it.
   - "Quiet" is judged against the room's noise level, so **pause** and the
     early end work in noisy rooms too. The noise level is learned only from
     audio that isn't speech, and soft speech is never treated as silence.
+  - "Quiet" is also judged against the speaker: it is at least 20 dB below
+    their own level (the median of the running segment's speech), also when
+    that is below the fixed quiet level. A quiet speaker's soft word endings
+    therefore don't end the segment, at any input level. Where room noise is
+    less than that far below the speaker, nothing counts as quiet: the early
+    end is lost there and the speech model alone ends the segment.
   - An optional external detector, such as semantic end-of-turn detection,
     may extend the wait. It may also shorten an extension it asked for
     earlier, but never below those base waits.
@@ -63,4 +73,9 @@ Delivered with **end**:
   model sounded after the *user's* speech, never after the assistant's own voice.
 - The assistant's own voice (echo) never starts a segment by way of a recovery,
   and silence after the assistant speaks never produces a phantom segment.
+- A recovery comes on the same frame with and without the early end, so the
+  speech model's probabilities don't depend on the quiet clock.
+- Optionally, the audio the speech model sees is amplified for quiet speakers
+  (up to 20 dB, never into clipping). Everything else, including the audio
+  that is returned, uses the input as it came. Off by default.
 - Every threshold and duration above can be configured.

@@ -16,6 +16,9 @@ from .silero import FRAME, SAMPLE_RATE
 BLOCK = 160  # 10 ms quiet-clock block
 FRAME_S = FRAME / SAMPLE_RATE
 EPS = 1e-9
+LEVEL_S = 3.0  # the speaker's level is the median of the segment's last 3 s of speech frames...
+LEVEL_MIN_S = 0.25  # ...once it has this much; until then the previous segment's level counts
+SOFT_OVER_DB = 10.0  # a soft start must be this far above the idle floor (steady noise Silero is unsure about is not)
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,7 @@ class VAD:
         quiet_rms: float = 0.002,
         noise_margin_db: float = 15.0,
         speech_margin_db: float = 15.0,
+        floor_margin_db: Optional[float] = 20.0,  # quiet input: quiet_rms drops to this far below the speaker; None = fixed
         preroll_s: float = 0.30,
         lookback_s: float = 1.0,
         restore_s: float = 1.0,  # Silero recovery after this much p < 0.1 over real (non-zero) audio; 0 = off
@@ -94,6 +98,10 @@ class VAD:
         onset_events: bool = False,  # "onset" at the first confident frame, before "start" confirms it
         confirm_threshold: Optional[float] = None,  # each frame of the start debounce; default continue_threshold
         rearm_s: Optional[float] = None,  # sound that re-arms the quiet clock; default start_s
+        soft_start_s: Optional[float] = 0.128,  # a start also after this long at soft_start_threshold; None = off
+        soft_start_threshold: float = 0.5,
+        normalize_to_dbfs: Optional[float] = None,  # quiet input: amplify what Silero sees up to this speech level (try -30)
+        normalize_max_db: float = 20.0,
         probability: Optional[Callable[[np.ndarray], float]] = None,
     ) -> None:
         if probability is None:
@@ -108,6 +116,18 @@ class VAD:
         # After the first confident frame, every frame until start_s is reached must stay at
         # or above this (a click fades out above continue_threshold for a few frames).
         self.confirm_threshold = continue_threshold if confirm_threshold is None else confirm_threshold
+        # Short hums ("mm-hmm"), quiet and narrowband speech often stay below start_threshold for
+        # their whole length. They also start a segment once the probability has held
+        # soft_start_threshold for soft_start_s over audio clearly louder than the room: slower,
+        # and never weaker than the debounce above (at least start_s long, every frame at or
+        # above confirm_threshold).
+        self.soft_start_s, self.soft_start_threshold = soft_start_s, soft_start_threshold
+        # Silero is less sure about quiet speech, most of all on a phone line: it finds fewer
+        # turns and drops out inside them. With normalize_to_dbfs the frames it sees (only those;
+        # levels and the quiet clock use the audio as it came) are amplified until speech that
+        # it scores 0.5 or more sits at that level, by at most normalize_max_db. Off by default:
+        # it also changes what Silero says about speakers a little below that level.
+        self.normalize_to_dbfs, self.normalize_max_db = normalize_to_dbfs, normalize_max_db
         # The quiet clock can only make an end earlier than Silero's count, never later. Over
         # near-silence it waits end_s like Silero; when room noise has raised the threshold, a
         # word's fading tail already counts as quiet, so it waits noisy_extra_s longer.
@@ -116,6 +136,11 @@ class VAD:
         self.noisy_extra_s = noisy_extra_s
         self.quiet_rms = quiet_rms
         self.noise_margin_db, self.speech_margin_db = noise_margin_db, speech_margin_db
+        # quiet_rms suits a speaker at a normal level, whose soft word endings stay above it.
+        # Below a quieter speaker (a phone line, a distant microphone) the floor keeps this
+        # distance to their level instead, or those endings would count as silence and end the
+        # segment. Measured on real turns: 19 dB still cuts some, 20.5 and 22 dB are equally safe.
+        self.floor_margin_db = floor_margin_db
         self.start_s = start_s
         self._end_frames = max(1, _frames(end_s))
         self._max_frames = max(1, _frames(max_speech_s))
@@ -137,7 +162,14 @@ class VAD:
         self._history: deque = deque(maxlen=self._preroll_n + self._lookback_n)  # (frame, dBFS, echo)
         self._floor: Optional[float] = None  # idle floor for the onset look-back
         self._noise_db: Optional[float] = None  # room noise for the quiet threshold
-        self._speech_db: Optional[float] = None
+        self._speech_db: Optional[float] = None  # level of the latest confident frames (follows a fade)
+        self._levels_seen: deque = deque(maxlen=_frames(LEVEL_S))  # speech frame levels of this segment
+        self._level_db: Optional[float] = None  # their median: the speaker's level
+        self._soft = 0  # frames at soft_start_threshold toward a soft start
+        self._gain_db = 0.0  # normalize_to_dbfs: gain on Silero's input, moving 2 dB per frame...
+        self._gain_seen: deque = deque(maxlen=16)  # ...toward the median level of the last half second of speech
+        self._shadow: Optional[int] = None  # Silero's silent frames after an early end, until it would end too
+        self._soft_segment = False  # the running segment began that way
         self._quiet = self.quiet_rms if self.quiet_rms > 0 else -1.0  # current quiet threshold (RMS)
         self._tail = False  # waiting for Silero to drop after an early end
         self._low = self._deaf = 0  # frames of p < 0.1 over real audio / over speech-loud audio
@@ -221,7 +253,7 @@ class VAD:
                 self._unbroken = False
                 self._loud += BLOCK
                 if self._loud >= self._rearm_samples:
-                    self._t_quiet, self._loud, self._paused = None, 0, False
+                    self._t_quiet, self._loud, self._paused, self._resumed = None, 0, False, False
         return quiet
 
     def _block_end(self, quiet: bool, t: float, events: list[Event]) -> None:
@@ -229,7 +261,9 @@ class VAD:
             return
         if self._t_quiet is not None and self._unbroken and t - self._t_quiet + EPS >= self._target(t):
             self._finish(t, events, speech_end=self._t_quiet)
-        elif quiet and self._t_quiet is None:
+        elif quiet and (self._t_quiet is None or not (self._unbroken or self._resumed)):
+            # armed, or counting anew after a click or a breath broke the count (speech that
+            # Silero heard resume keeps it off until real sound re-arms it)
             self._t_quiet, self._unbroken, self._loud, self._quiet_blocks = t, True, 0, 1
             raised = self._quiet > self.quiet_rms * (1 + 1e-6)
             self._quiet_wait = self.quiet_end_s + (self.noisy_extra_s if raised else 0.0)
@@ -246,7 +280,11 @@ class VAD:
     # -- per 32 ms Silero frame --------------------------------------------
     def _frame(self, frame: np.ndarray, t: float, events: list[Event]) -> None:
         t0 = time.perf_counter()
-        p = self._p(frame)
+        gain = self._gain_db
+        if gain >= 0.01:  # never into clipping: a loud frame right after a soft one gets less
+            peak = float(np.max(np.abs(frame)))
+            gain = max(0.0, min(gain, -6.0 - 20.0 * math.log10(peak))) if peak > 0.0 else 0.0
+        p = self._p(frame if gain < 0.01 else frame * np.float32(10.0 ** (gain / 20.0)))
         infer_s = time.perf_counter() - t0
         if self._in_speech:
             voiced = p >= self.continue_threshold
@@ -255,13 +293,22 @@ class VAD:
         level = _dbfs(frame)
         echo = t <= self._echo_until
         self._history.append((frame, level, echo))
+        if (self.normalize_to_dbfs is not None and p >= 0.5 and not echo
+                and (self._floor is None or level >= self._floor + SOFT_OVER_DB)):  # not Silero's tail over the room
+            self._gain_seen.append(level)
+            want = self.normalize_to_dbfs - sorted(self._gain_seen)[len(self._gain_seen) // 2]
+            want = max(0.0, min(self.normalize_max_db, want))
+            self._gain_db += max(-2.0, min(2.0, want - self._gain_db))
         self._levels(p, level, echo)
+        soft = (self.soft_start_s is not None and p >= self._soft_level()
+                and (self._floor is None or level >= self._floor + SOFT_OVER_DB))
         if self._tail:  # after an early end, Silero's fading tail must not open a new segment...
             self._tail = p >= self.continue_threshold
+            soft = False  # ...softly at all (a breath after the word would), and not confidently...
             if level <= 20.0 * math.log10(max(self._quiet, 1e-9)):
                 voiced = False  # ...over quiet audio; speech that resumes at once is loud and may start
         if not self._in_speech:
-            self._idle_frame(p, voiced, level, t, events)
+            self._idle_frame(p, voiced, soft, level, t, events)
             self._report(t, p, voiced, infer_s, events)
             return
         self._audio.append(frame)
@@ -270,7 +317,7 @@ class VAD:
             if self._silent:
                 self._paused = False
                 if self._t_quiet is not None and t > self._t_quiet:
-                    self._unbroken = False
+                    self._unbroken, self._resumed = False, True
             self._voiced += 1
             self._silent = 0
             self._last_voiced = t
@@ -291,9 +338,14 @@ class VAD:
 
     def _levels(self, p: float, level: float, echo: bool) -> None:
         """Learn speech and room-noise levels and set the quiet threshold."""
-        if p >= self.start_threshold:
+        # A segment that began softly may never reach start_threshold: its levels are learned
+        # from the frames that carry it.
+        carries = p >= (self._soft_level() if self._in_speech and self._soft_segment else self.start_threshold)
+        if carries:
             s = self._speech_db
             self._speech_db = level if s is None else s + max(-1.0, min(1.0, level - s))
+            if self._in_speech:
+                self._learn_level(level)
         elif p < self.continue_threshold and level > -90.0 and not echo:  # skip gated digital silence
             n = self._noise_db
             if n is None:
@@ -305,9 +357,12 @@ class VAD:
         if self.quiet_rms <= 0:
             self._quiet = -1.0  # quiet clock off: no block is ever quiet
         else:
-            # Noise can raise the threshold above quiet_rms, but only up to speech level - 15 dB
-            # (soft speech is never quiet); it never drops below quiet_rms, so it is never stricter.
+            # The floor is quiet_rms, or floor_margin_db below the speaker when that is lower
+            # (quiet input). Noise can raise the threshold above the floor, but only up to the
+            # latest speech level - 15 dB; it never drops below the floor.
             floor_db = 20.0 * math.log10(self.quiet_rms)
+            if self._level_db is not None and self.floor_margin_db is not None:
+                floor_db = min(floor_db, self._level_db - self.floor_margin_db)
             db = floor_db
             if self._noise_db is not None:
                 db = max(db, self._noise_db + self.noise_margin_db)
@@ -327,9 +382,17 @@ class VAD:
         snapshot = getattr(self._p, "snapshot", None)
         if p >= self.start_threshold and not echo and snapshot is not None:
             snapshot()
-        if self._in_speech:
+        # After an early end Silero's own count would still be running. Until it would have
+        # ended the segment too, this counts as speech here, so a restore comes exactly when it
+        # would without the quiet clock and the probabilities that follow are the same.
+        in_speech = self._in_speech or self._shadow is not None
+        if self._shadow is not None and not self._in_speech:
+            self._shadow = 0 if p >= self.continue_threshold else self._shadow + 1
+            if self._shadow >= self._end_frames:
+                self._shadow = None  # this frame is the one Silero's count would end on
+        if in_speech:
             self._quiet_restored = False  # a new pause may restore once more
-        if not self._restore_n or restore is None or self._in_speech or echo:
+        if not self._restore_n or restore is None or in_speech or echo:
             self._low = self._deaf = 0
             return
         speech_like = self._speech_like(level)
@@ -343,6 +406,15 @@ class VAD:
             self._quiet_restored = self._quiet_restored or bool(quiet)
             self._low = self._deaf = 0
 
+    def _soft_level(self) -> float:
+        return max(self.soft_start_threshold, self.confirm_threshold)
+
+    def _learn_level(self, level: float) -> None:
+        seen = self._levels_seen
+        seen.append(level)
+        if self._level_db is None or len(seen) * FRAME_S >= LEVEL_MIN_S:
+            self._level_db = sorted(seen)[len(seen) // 2]
+
     def _speech_like(self, level: float) -> bool:
         """Loud like the speaker and clearly above the idle floor."""
         if self._speech_db is None or self._floor is None:
@@ -350,7 +422,7 @@ class VAD:
         margin = max(3.0, min(10.0, 0.5 * (self._speech_db - self._floor)))
         return level >= max(self._floor + margin, self._speech_db - 10.0)
 
-    def _idle_frame(self, p: float, voiced: bool, level: float, t: float, events: list[Event]) -> None:
+    def _idle_frame(self, p: float, voiced: bool, soft: bool, level: float, t: float, events: list[Event]) -> None:
         floor = self._floor
         if self._lookback_n:
             if floor is None or level <= floor:
@@ -360,10 +432,17 @@ class VAD:
         self._idle += 1
         self._streak = self._streak + 1 if voiced else 0
         self._peak = max(self._peak, p) if voiced else 0.0
+        self._soft = self._soft + 1 if soft else 0
         if self._streak == 1 and self._onset_events:
             events.append(Event("onset", t))  # maybe speech; "start" follows only if it holds
+        self._soft_segment = False
         if self._streak < self._start_frames:
-            return
+            if not soft or self._soft < max(self._start_frames, _frames(self.soft_start_s)):
+                return
+            if self._onset_events and not self._streak:
+                events.append(Event("onset", t))  # no confident frame came: the onset is the start
+            self._streak, self._soft_segment = self._soft, True
+            self._peak = max(self._peak, p)
         lookback = self._lookback(floor)
         keep = self._preroll_n if not lookback else max(self._preroll_n, min(self._preroll_n + lookback, self._idle))
         self._in_speech = True
@@ -372,6 +451,9 @@ class VAD:
         self._lookback_s = lookback * FRAME_S
         self._voiced = self._streak
         self._last_voiced = t
+        self._levels_seen.clear()  # the speaker's level is learned anew in every segment
+        for _, past, _ in list(self._history)[-self._streak:]:
+            self._learn_level(past)
         events.append(Event("start", self._start))
 
     def _lookback(self, floor: Optional[float]) -> int:
@@ -419,7 +501,8 @@ class VAD:
         )
         self._in_speech = False
         self._tail = speech_end is not None  # ended by the quiet clock, Silero may still be high
-        self._idle = self._streak = 0
+        self._shadow = self._silent if speech_end is not None else None  # Silero's count, carried on
+        self._idle = self._streak = self._soft = 0
         self._clear_segment()
         events.append(Event("end", t, segment))
 
@@ -431,6 +514,7 @@ class VAD:
         self._paused = False
         self._t_quiet: Optional[float] = None
         self._unbroken = False
+        self._resumed = False  # Silero heard speech resume inside the running quiet count
         self._loud = 0
         self._quiet_blocks = 0
         self._quiet_wait = self.quiet_end_s
