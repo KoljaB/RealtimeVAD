@@ -1,0 +1,66 @@
+AgentSession check, livekit-agents 1.8.11, turn_detection='vad', interruption mode 'vad' min_duration 0.5 s, fake STT final at true end + 50 ms.
+Values: median [min..max] in ms over the clips (n= when some runs had no such event), or counts.
+
+== A. end of turn, agent idle, min_delay 0.5 s (6 sentences: zh_01_f, de_03_m, en_04_m, fr_05_m, hi_06_f, ru_07_f); times after the true end of speech
+                                             silero default (0.55 s)                   silero 0.25 s    realtimevad default (0.25 s)
+user state leaves 'speaking'                          708 [659..763]                  387 [339..443]                  321 [271..403]
+agent 'thinking' (turn committed)                     709 [660..764]                  632 [584..688]                  561 [523..648]
+on_user_turn_completed                                708 [659..764]                  632 [583..688]                  560 [522..648]
+first agent audio                                     812 [762..867]                  734 [685..790]                  663 [625..750]
+EOU metric end_of_utterance_delay                     576 [576..576]                  501 [500..501]                  501 [500..501]
+runs with >1 committed user turn                                 0/6                             0/6                             0/6
+'thinking' before the true end (sum)                               0                               0                               0
+user 'speaking' segments (sum)                                     6                               8                               9
+VAD START/END out of order (sum)                                   0                               0                               0
+runs with VAD segment open at end                                0/6                             0/6                             0/6
+
+== A. end of turn, agent idle, min_delay 0.3 s (6 sentences: zh_01_f, de_03_m, en_04_m, fr_05_m, hi_06_f, ru_07_f); times after the true end of speech
+                                             silero default (0.55 s)                   silero 0.25 s    realtimevad default (0.25 s)
+user state leaves 'speaking'                          707 [659..763]                  387 [338..443]                  320 [271..402]
+agent 'thinking' (turn committed)                     708 [660..764]                  433 [384..488]                  361 [323..447]
+on_user_turn_completed                                708 [659..764]                  433 [383..487]                  361 [323..447]
+first agent audio                                     811 [762..867]                  535 [486..590]                  463 [425..549]
+EOU metric end_of_utterance_delay                     576 [576..576]                  301 [300..302]                  301 [300..302]
+runs with >1 committed user turn                                 0/6                             0/6                             0/6
+'thinking' before the true end (sum)                               0                               0                               0
+user 'speaking' segments (sum)                                     6                               8                               9
+VAD START/END out of order (sum)                                   0                               0                               0
+runs with VAD segment open at end                                0/6                             0/6                             0/6
+
+== B. interruption: agent speaking a 12 s reply, user starts a sentence (same 6); times after the true onset
+                                              silero default (0.55 s)                   silero 0.25 s    realtimevad default (0.25 s)
+agent speaking at onset                                           6/6                             6/6                             6/6
+first VAD START (vs. reference onset)                  59 [-358..354]                  58 [-358..354]                  97 [-318..375]
+VAD speech_duration reaches 0.5 s                       506 [81..795]                   506 [81..794]                   503 [81..753]
+agent paused/interrupted                                506 [81..795]                   506 [81..795]                   503 [81..753]
+  of which by VAD (before STT final)                              6/6                             6/6                             6/6
+  paused (pause path)                                             6/6                             6/6                             6/6
+  interrupted (playback cleared)                                  6/6                             6/6                             6/6
+user turn answered                                                6/6                             6/6                             6/6
+answer audio after true end                          1000 [962..1069]                  925 [887..994]                  863 [825..994]
+agent stops before the onset (sum)                                  0                               0                               0
+VAD START/END out of order (sum)                                    0                               0                               0
+runs with VAD segment open at end                                 0/6                             0/6                             0/6
+
+== C. short real backchannel during agent speech ('Mm' 380 ms, 'Hmm' 350 ms, 'Yeah' 310 ms, 'Okay' 390 ms, 'Mm-hmm' 350 ms, 'Okay' 310 ms), empty STT transcript
+                                                          silero default (0.55 s)                   silero 0.25 s    realtimevad default (0.25 s)
+agent speaking at onset                                                       5/6                             5/6                             5/6
+agent paused (any time)                                                       4/6                             4/6                             5/6
+  first pause before onset - 0.3 s (clip lead-in)                             1/6                             1/6                             1/6
+  pause after onset                                            542 [541..582] n=3              542 [541..581] n=3              542 [521..582] n=4
+  resumed                                                                     4/6                             4/6                             5/6
+  resume after end of the sound                             2763 [2615..3614] n=4           2444 [2292..3292] n=4           2324 [2234..3293] n=5
+agent interrupted (playback cleared)                                          0/6                             0/6                             0/6
+agent state left 'speaking'                                                   3/6                             3/6                             4/6
+VAD START/END out of order (sum)                                                0                               0                               0
+runs with VAD segment open at end                                             0/6                             0/6                             0/6
+
+== D. default streaming turn detector (inference.TurnDetector) vs VAD min_silence_duration (AudioRecognition._check_vad_silence_requirement, requires >= 0.25 s)
+silero default (0.55 s)          min_silence_duration=0.55  accepted
+silero 0.25 s                    min_silence_duration=0.25  accepted
+realtimevad default (0.25 s)     min_silence_duration=0.25  accepted
+
+== warnings/errors logged during the runs (vad, count, message)
+(none)
+
+total runtime 208 s
