@@ -12,10 +12,11 @@ session = AgentSession(
 )
 ```
 
-Not on PyPI yet. From a checkout of this repository:
+The plugin itself is not on PyPI yet ([#5](https://github.com/KoljaB/RealtimeVAD/issues/5)). From a checkout of this repository:
 
 ```bash
-pip install -e . -e livekit-plugins-realtimevad
+pip install "realtimevad>=0.0.5"
+pip install ./livekit-plugins-realtimevad
 ```
 
 Tested with livekit-agents 1.8.11, Python 3.10+.
@@ -176,7 +177,7 @@ pytest                                            # the event mapping, with scri
 
 ## Pipecat
 
-Pipecat's slot is different: a `VADAnalyzer` only supplies a probability per
+Tracked in [#4](https://github.com/KoljaB/RealtimeVAD/issues/4). Pipecat's slot is different: a `VADAnalyzer` only supplies a probability per
 window and Pipecat runs its own start/stop timers on it. RealtimeVAD's early end
 does not fit through that without overriding `analyze_audio`. Not done here.
 
