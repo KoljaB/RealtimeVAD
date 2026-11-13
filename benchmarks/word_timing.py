@@ -131,7 +131,7 @@ def run(x: np.ndarray, **options):
             elif e.kind == "pause":
                 pauses.append((e.time, e.source))
             elif e.kind == "end":
-                ends.append((e.time, e.segment.speech_end, e.time - len(e.segment.audio) / SR))
+                ends.append((e.time, e.segment.speech_end, e.time - len(e.segment.audio) / SR, bool(getattr(e.segment, "early", False))))
                 seen.append(("e",))
         armed, unbroken, blocks = vad.quiet_clock
         trace.append((t, n % BLOCK == 0, seen, vad.in_speech, armed, unbroken, blocks))
@@ -429,12 +429,11 @@ def measure(clip):
     seg_a, seg_b, seg_i = segments_of(a, clip_end), segments_of(b, clip_end), iterator_segments(frames)
     soft = max(row["noise_db"] + 6.0, row["speech_db"] - 25.0)
     # every RealtimeVAD end: time, where the speech stopped for it, whether the quiet clock
-    # made it (it then comes 0.24 or 0.28 s after that point, Silero's count 0.256 s after
+    # made it (Segment.early; only with early_end=True: it then comes 0.24 or 0.28 s after that point, Silero's count 0.256 s after
     # its last voiced frame), and the labelled speech and audible sound inside that wait
     row["rvad_ends"] = []
-    for t, speech_end, _ in a["ends"]:
-        wait = t - speech_end
-        row["rvad_ends"].append([round(t, 3), round(speech_end, 3), int(abs(wait - 0.256) > 0.005),
+    for t, speech_end, _, early in a["ends"]:
+        row["rvad_ends"].append([round(t, 3), round(speech_end, 3), int(early),
                                  round(words.after(speech_end) - words.after(t), 3),
                                  audible_s(db, speech_end, t, soft), words.where(speech_end),
                                  round(min((p for ft, p in frames if speech_end + 0.1 < ft <= t + FRAME_S), default=1.0), 3)])
