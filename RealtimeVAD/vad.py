@@ -73,7 +73,7 @@ class Frame:
 
 @dataclass(frozen=True)
 class Event:
-    kind: str  # "onset" | "start" | "pause" | "end" | "frame"
+    kind: str  # "onset" | "start" | "pause" | "resume" | "end" | "frame"
     time: float
     segment: Optional[Segment] = None  # set on "end"
     source: str = ""  # "pause": "quiet" (10 ms clock) or "silero" (first unvoiced frame)
@@ -123,6 +123,7 @@ class VAD:
         extend: Optional[Callable[[float], Optional[float]]] = None,
         frame_events: bool = False,
         onset_events: bool = False,  # "onset" at the first confident frame, before "start" confirms it
+        resume_events: bool = False,  # "resume" when the speech went on after a "pause"
         confirm_threshold: Optional[float] = None,  # each frame of the start debounce; default continue_threshold
         rearm_s: Optional[float] = None,  # sound that re-arms the quiet clock; default start_s
         repause_s: Optional[float] = 0.02,  # sound after a "pause" that lets the next quiet block report a new one; None = off
@@ -141,6 +142,11 @@ class VAD:
         self._extend = extend
         self._frame_events = frame_events
         self._onset_events = onset_events
+        # A "pause" is a guess. "resume" takes it back: sound came back after it (what allows a
+        # new "pause": repause_s of sound clearly above the room, sound that re-arms the quiet
+        # clock, or Silero hearing speech again after a silent frame). At most one per "pause";
+        # a consumer cancels the work it started at the "pause" and starts again at the next.
+        self._resume_events = resume_events
         self.start_threshold, self.continue_threshold = start_threshold, continue_threshold
         # After the first confident frame, every frame until start_s is reached must stay at
         # or above this (a click fades out above continue_threshold for a few frames).
@@ -311,6 +317,8 @@ class VAD:
             if block:
                 self._ns_quiet = self._in_speech and self._ns_on and self._subtracted_quiet()
             quiet = block and self._block_start(self._block_energy / BLOCK)
+            if self._resume_due:
+                self._resume(self._n / SAMPLE_RATE, events)
             if len(self._frame_buf) == FRAME:
                 frame, self._frame_buf = self._frame_buf, np.zeros(0, dtype=np.float32)
                 level, self._frame_energy = _dbfs(self._frame_energy / FRAME), 0.0
@@ -379,8 +387,10 @@ class VAD:
                     if n is None or power >= 10.0 ** ((n + self.repause_room_db) / 10.0):
                         self._clear += 1
                         self._again = self._clear >= self._repause_n
+                        self._resume_due = self._again
                 if self._loud >= self._rearm_samples:
                     self._t_quiet, self._loud, self._paused, self._resumed = None, 0, False, False
+                    self._resume_due = True
                     self._again = False
         return quiet
 
@@ -447,6 +457,7 @@ class VAD:
         if voiced:
             if self._silent:
                 self._paused = False
+                self._resume(t, events)
                 if self._t_quiet is not None and t > self._t_quiet:
                     self._unbroken, self._resumed = False, True
             self._voiced += 1
@@ -632,8 +643,15 @@ class VAD:
 
     def _pause(self, t: float, events: list[Event], source: str) -> None:
         if not self._paused:
-            self._paused = True
+            self._paused = self._pause_open = True
             events.append(Event("pause", t, source=source))
+
+    def _resume(self, t: float, events: list[Event]) -> None:
+        self._resume_due = False
+        if self._pause_open:
+            self._pause_open = False
+            if self._resume_events:
+                events.append(Event("resume", t))
 
     def _finish(self, t: float, events: list[Event], early: bool = False) -> None:
         # The speech stopped where the unbroken quiet began, if that is before Silero's last
@@ -663,6 +681,8 @@ class VAD:
         self._voiced = self._silent = 0
         self._end_target = self._end_frames
         self._paused = False
+        self._pause_open = False  # a "pause" was reported and no "resume" since
+        self._resume_due = False
         self._t_quiet: Optional[float] = None
         self._unbroken = False
         self._resumed = False  # Silero heard speech resume inside the running quiet count

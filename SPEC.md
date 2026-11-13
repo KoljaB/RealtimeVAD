@@ -16,7 +16,7 @@ actually goes quiet.
   - It is never held back to make it more certain.
   - Several can come before one **end**. When sound comes back after a **pause** (at least 20 ms that are over the quiet level and clearly above the room's noise) and the audio goes quiet again, a new **pause** is reported. The latest one is the best estimate of where the speech stopped; a client that started speculative work on an earlier one should redo it.
   - Steady room noise alone does not cause a new **pause**.
-  - There is no event for "the speech went on". A **pause** stays open until the next **pause**, or the **end**.
+- **resume** (optional): the speech went on after a **pause**. It comes when sound is back that allows a new **pause**: 20 ms over the quiet level and clearly above the room's noise, or the speech model hearing speech again after a silent frame. At most one per **pause**, and never without one before it. A client cancels the work it started at the **pause**. A click (one 10 ms block) and steady room noise cause none. Without it, a **pause** stays open until the next **pause** or the **end**.
 - **end**: the speech segment is over. Its timing:
   - By default it comes exactly where the speech model alone ends the
     segment: when the model's raw probability per 32 ms frame has stayed

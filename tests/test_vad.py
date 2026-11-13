@@ -721,3 +721,30 @@ def test_loud_noise_after_the_turn_starts_nothing_however_often_silero_is_restor
     ev = [e for n, _, amp in segs for e in vad.feed(level(n * FRAME, amp))]
     assert m.restores >= 3
     assert kinds(ev) == ["start", "pause", "end"]
+
+
+def test_resume_says_that_the_speech_went_on_after_a_pause():
+    # Off by default. With resume_events: 20 ms of sound after a pause take the pause back,
+    # at the end of the second loud block; the next quiet gives the new pause.
+    ev = word_then([(320, 480, 0.02)], resume_events=True)
+    assert kinds(ev) == ["start", "pause", "resume", "pause", "end"]
+    assert ev[2].time == pytest.approx((10 * FRAME + 320 + 320) / 16000)
+    assert "resume" not in kinds(word_then([(320, 480, 0.02)]))
+    # one loud block is a click: no new pause, so nothing to take back
+    assert kinds(word_then([(320, 160, 0.02)], resume_events=True)) == ["start", "pause", "end"]
+    # with repause_s=None it comes when the sound re-arms the quiet clock (64 ms)
+    ev = word_then([(320, 1280, 0.02)], resume_events=True, repause_s=None)
+    assert kinds(ev) == ["start", "pause", "resume", "pause", "end"]
+    assert ev[2].time == pytest.approx((10 * FRAME + 320 + 7 * 160) / 16000)
+
+
+def test_resume_when_silero_hears_speech_again_and_only_once_per_pause():
+    # Silero's own speech-off (loud audio, so the quiet clock is silent), then speech again.
+    ev = run(SPEECH + [(2, 0.1, 0.1), (4, 0.9, 0.1), (12, 0.1, 0.0)], resume_events=True)
+    assert kinds(ev) == ["start", "pause", "resume", "pause", "end"]
+    assert ev[1].source == "silero" and ev[2].time == pytest.approx(13 * F)
+    # sound comes back twice after one pause without a quiet block in between: one resume
+    ev = word_then([(320, 320, 0.02), (640, 160, 0.0015), (800, 320, 0.02)], resume_events=True, quiet_rms=0.001)
+    assert kinds(ev).count("resume") <= kinds(ev).count("pause")
+    for a, b in zip(kinds(ev), kinds(ev)[1:]):
+        assert (a, b) != ("resume", "resume")

@@ -61,6 +61,7 @@ for chunk in microphone_chunks():
 | `start` | Speech has begun | After about 64 ms of confident speech, so clicks don't trigger it. Speech Silero is never confident about (a short "mm-hmm", a quiet phone voice) starts after about 0.13 s at half confidence, if it is clearly louder than the room |
 | `pause` | The speaker may have stopped (speech-off) | Within about 10 ms of the audio going quiet. Again when sound came back and the audio goes quiet again |
 | `end` | The segment is over | Where Silero alone ends it: after 0.24 s of Silero silence. With `VAD(early_end=True)` 0.24 s after speech-off if that is sooner. Never later than Silero alone |
+| `resume` | The speech went on after a `pause` | About 20 ms after sound is back. Off by default: `VAD(resume_events=True)` |
 | `onset` | Speech may have begun | At the first confident frame, before `start` confirms it. Off by default: `VAD(onset_events=True)` |
 
 `vad.audio()` returns the running segment at any time, starting about 0.3 s
@@ -82,13 +83,18 @@ followed by more speech.
 - **Use it to start work you can cancel:** finalize the transcript, call the
   LLM, prepare the voice output. Cancel when speech continues. A wrong `pause`
   then costs almost nothing, and a right one saves hundreds of milliseconds.
+- **Start at `pause`, cancel at `resume`, redo at the next `pause`.** With
+  `VAD(resume_events=True)` a `resume` tells you the speech went on: 20 ms
+  after sound came back, a median 50 ms after its `pause`. It takes back 91
+  to 95 % of the pauses that were followed by more speech (the rest are
+  replaced by the next `pause` or closed by `end` without one).
 - **Act on every `pause`; the latest one counts.** A `pause` can come inside
   the last word: the level dips before a final consonant or a weak last
   syllable and comes back. When it does, the next quiet gives a new `pause`.
   Redo the speculative work then (the audio is longer now) and drop the
   older result.
-- **Nothing tells you that speech went on.** There is no "resume" event. A
-  `pause` is open until the next `pause` or the `end`.
+- **Without `resume_events`** a `pause` is open until the next `pause` or
+  the `end`.
 - **Never treat it as the end of the turn.** Only `end` closes a segment.
 - **Can't cancel quickly?** Ignore `pause` and wait for `end`. The extra
   false alarms would cost you more than they save.
@@ -185,6 +191,13 @@ What changed after 0.0.5, and what it cost:
   measured one 32 ms frame short; the same code gives 252 ms for 0.0.5 with
   the fixes on this page, 238 ms with the new `pause`.
 - `VAD(repause_s=None)` gives one `pause` per stretch of speech, as in 0.0.5.
+
+The optional `resume` event on the same clips (close microphones): 1.6 to 2.1
+per second of speech; it comes a median 50 ms after its `pause` (p90 120 to
+150 ms) and 20 ms after the first 10 ms block that was not quiet again (p90
+50 ms). In 3 to 9 % of clips a `resume` follows the last `pause` and no new
+`pause` comes before the `end`: the turn then ends with the speculative work
+cancelled, and `end` is the signal to act on.
 
 ### `end`
 

@@ -108,8 +108,11 @@ def run(x: np.ndarray, **options):
     """Feed x boundary by boundary; return events and a trace of the quiet clock's state."""
     from RealtimeVAD import VAD
 
-    vad = VAD(frame_events=True, **options)
-    frames, starts, pauses, ends, trace = [], [], [], [], []
+    try:
+        vad = VAD(frame_events=True, resume_events=True, **options)
+    except TypeError:  # a library without the "resume" event
+        vad = VAD(frame_events=True, **options)
+    frames, starts, pauses, ends, trace, resumes = [], [], [], [], [], []
     n = 0
     while n < len(x):
         step = min(BLOCK - n % BLOCK, FRAME - n % FRAME, len(x) - n)
@@ -130,6 +133,8 @@ def run(x: np.ndarray, **options):
                 seen.append(("s",))
             elif e.kind == "pause":
                 pauses.append((e.time, e.source))
+            elif e.kind == "resume":
+                resumes.append(e.time)
             elif e.kind == "end":
                 ends.append((e.time, e.segment.speech_end, e.time - len(e.segment.audio) / SR, bool(getattr(e.segment, "early", False))))
                 seen.append(("e",))
@@ -138,7 +143,8 @@ def run(x: np.ndarray, **options):
     still = None
     if vad.in_speech:
         still = n / SR - len(vad.audio()) / SR
-    return {"frames": frames, "starts": starts, "pauses": pauses, "ends": ends, "open": still, "trace": trace}
+    return {"frames": frames, "starts": starts, "pauses": pauses, "ends": ends, "open": still, "trace": trace,
+            "resumes": resumes}
 
 
 def replay(trace, need: int):
@@ -408,6 +414,15 @@ def measure(clip):
     row["pauses"] = []
     for (t, source), (quiet_s, to_end) in zip(a["pauses"], runs):
         row["pauses"].append([round(t, 3), source[0], quiet_s, int(to_end), loud_again(db, t, loud), words.where(t)])
+    # every "resume": its time, the pause it takes back, and for a quiet-clock pause how long
+    # after the first block that was not quiet again (the quiet count's first break) it came
+    row["resumes"] = []
+    for t in a["resumes"]:
+        before = [p for p in row["pauses"] if p[0] <= t + 1e-6]
+        if before:
+            pt, src, quiet_s = before[-1][:3]
+            back = round(t - (pt - BLOCK / SR + quiet_s), 3) if src == "q" and not before[-1][3] else None
+            row["resumes"].append([round(t, 3), pt, back])
     offs, above, low_run = [], False, 0
     for i, (t, p) in enumerate(frames):  # Silero p < 0.5 after speech
         if p >= 0.5:
@@ -751,6 +766,24 @@ def report(rows) -> str:
     out.append(table(["Condition", "false `pause` per s of speech", "Silero p < 0.5 followed by speech, per s",
                       "clips without a false `pause`", "per speaker: p25 / median / p75", "from the quiet clock",
                       "inside a labelled word"], t))
+    if any(r.get("resumes") for c in conds for r in F[c]):
+        t = []
+        for c in conds:
+            sp_s = sum(r["last"] - r["first"] for r in F[c])
+            false = [p[0] for r in F[c] for p in r["pauses"] if p[0] in set(false_pauses(r))]
+            taken = [x for r in F[c] for x in r["resumes"] if x[1] in set(false_pauses(r))]
+            last = sum(1 for r in F[c] if final_pause(r) is not None and any(x[1] == final_pause(r) for x in r["resumes"]))
+            after = [x[0] - x[1] for x in taken]
+            back = [x[2] for x in taken if x[2] is not None]
+            t.append([NAMES[c], f"{len(taken) / sp_s:.2f}", pct(len(taken), len(false)),
+                      f"{ms(q(after, 50))} ({ms(q(after, 25))} – {ms(q(after, 75))}, p90 {ms(q(after, 90))})" if after else "–",
+                      f"{ms(q(back, 50))} ({ms(q(back, 25))} – {ms(q(back, 75))}, p90 {ms(q(back, 90))})" if back else "–",
+                      pct(last, sum(1 for r in F[c] if final_pause(r) is not None))])
+        out.append("The `resume` event (`resume_events=True`): the speech went on after a `pause`.\n")
+        out.append(table(["Condition", "`resume` per s of speech", "false `pause`s taken back by a `resume`",
+                          "`resume` after its `pause`: median (p25 – p75, p90) ms",
+                          "after the first block that was not quiet again (quiet-clock pauses), ms",
+                          "clips with a `resume` after the last `pause` (the speech-off)"], t))
     edges = (0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1, 0.15, 0.24)
     t = []
     for c in conds:
