@@ -802,3 +802,20 @@ def test_only_pause_mode_accurate_repeats_the_pause():
     assert kinds(word_then([(320, 480, 0.02)], pause_mode="balanced")).count("pause") == 1
     assert kinds(word_then([(320, 480, 0.02)], pause_mode="fast")).count("pause") == 1
     assert kinds(word_then([(320, 480, 0.02)], pause_mode="fast", repause_s=0.02)).count("pause") == 2
+
+
+def test_a_segment_opened_after_an_early_end_counts_sileros_silence_as_silero_does():
+    # A word, an early end while Silero is still high, then speech resumes loudly at once (a
+    # new segment) and fades into quiet audio that Silero scores as speech for 4 more frames.
+    # The rule that keeps Silero's tail from opening a segment over quiet audio used to go on
+    # inside that new segment: its frames over the quiet audio were not voiced, the silence
+    # count began 4 frames before Silero's and ended the segment before Silero alone would,
+    # as an end that was not marked early. Recoveries then came on other frames. Seen on 2 of
+    # 7,080 meeting clips with pause_mode="fast", where more of a fade counts as quiet.
+    segs = SPEECH + [(10, 0.92, 0.0), (2, 0.95, 0.1), (4, 0.8, 0.0), (14, 0.1, 0.0)]
+    for mode in ("accurate", "balanced", "fast"):
+        alone = [e for e in run(segs, early_end=False, quiet_rms=0) if e.kind == "end"]
+        ends = [e for e in run(segs, quiet_end_s=0.3, pause_mode=mode) if e.kind == "end"]
+        assert [e.time for e in alone] == [pytest.approx(34 * F)]  # 8 silent frames after frame 25
+        assert len(ends) == 2 and all(e.segment.early for e in ends)  # both by the quiet clock...
+        assert ends[1].time == pytest.approx(0.72 + 0.3)  # ...0.3 s after the first whole quiet 10 ms block
