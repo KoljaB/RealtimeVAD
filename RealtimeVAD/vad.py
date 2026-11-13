@@ -51,9 +51,10 @@ class Segment:
     audio: np.ndarray  # float32, 16 kHz, from just before the start up to the end
     start: float
     end: float  # stream time the end was decided
-    speech_end: float  # when the speech actually stopped
+    speech_end: float  # when the speech actually stopped (from the quiet clock where it saw it, else Silero's last voiced frame)
     voiced_s: float
     peak: float
+    early: bool = False  # ended by the quiet clock before Silero's count (only with early_end=True)
 
 
 @dataclass(frozen=True)
@@ -106,8 +107,9 @@ class VAD:
         continue_threshold: float = 0.45,
         start_s: float = 0.064,
         end_s: float = 0.24,  # Silero's silence count
-        quiet_end_s: Optional[float] = None,  # quiet clock; default end_s
-        noisy_extra_s: float = 0.04,  # added when room noise has raised the quiet threshold
+        early_end: bool = False,  # the quiet clock may end a segment before Silero's count does
+        quiet_end_s: Optional[float] = None,  # ...after this much quiet; default end_s
+        noisy_extra_s: float = 0.04,  # ...plus this when room noise has raised the quiet threshold
         quiet_rms: float = 0.002,
         noise_margin_db: float = 15.0,
         speech_margin_db: float = 15.0,
@@ -153,10 +155,17 @@ class VAD:
         # it scores 0.5 or more sits at that level, by at most normalize_max_db. Off by default:
         # it also changes what Silero says about speakers a little below that level.
         self.normalize_to_dbfs, self.normalize_max_db = normalize_to_dbfs, normalize_max_db
-        # The quiet clock can only make an end earlier than Silero's count, never later. Over
-        # near-silence it waits end_s like Silero; when room noise has raised the threshold, a
-        # word's fading tail already counts as quiet, so it waits noisy_extra_s longer.
+        # A segment ends when Silero has heard end_s of silence. The quiet clock reports the
+        # speech-off ("pause") about 100 ms before Silero notices it, and tells the segment when
+        # the speech stopped; by default it does not end the segment. Silero's probability lags
+        # that long behind the audio, so an end after end_s of quiet audio comes in pauses of
+        # end_s to end_s + 0.1 s that Silero alone rides through: the same as a shorter end_s,
+        # and it costs the same (more ends inside an utterance). early_end=True allows it: over
+        # near-silence the quiet clock then waits quiet_end_s; when room noise has raised the
+        # threshold, a word's fading tail already counts as quiet, so it waits noisy_extra_s
+        # longer. Either way an end is never later than Silero's count alone gives it.
         self.end_s = end_s
+        self.early_end = early_end
         self.quiet_end_s = end_s if quiet_end_s is None else quiet_end_s
         self.noisy_extra_s = noisy_extra_s
         self.quiet_rms = quiet_rms
@@ -361,8 +370,9 @@ class VAD:
     def _block_end(self, quiet: bool, t: float, events: list[Event]) -> None:
         if not self._in_speech:
             return
-        if self._t_quiet is not None and self._unbroken and t - self._t_quiet + EPS >= self._target(t):
-            self._finish(t, events, speech_end=self._t_quiet)
+        if (self.early_end and self._t_quiet is not None and self._unbroken
+                and t - self._t_quiet + EPS >= self._target(t)):
+            self._finish(t, events, early=True)
         elif quiet and (self._t_quiet is None or not (self._unbroken or self._resumed)):
             # armed, or counting anew after a click or a breath broke the count (speech that
             # Silero heard resume keeps it off until real sound re-arms it)
@@ -594,18 +604,24 @@ class VAD:
             self._paused = True
             events.append(Event("pause", t, source=source))
 
-    def _finish(self, t: float, events: list[Event], speech_end: Optional[float] = None) -> None:
+    def _finish(self, t: float, events: list[Event], early: bool = False) -> None:
+        # The speech stopped where the unbroken quiet began, if that is before Silero's last
+        # voiced frame (its probability lags behind the audio).
+        speech_end = self._last_voiced
+        if self._t_quiet is not None and self._unbroken and (early or self._t_quiet < speech_end):
+            speech_end = self._t_quiet
         segment = Segment(
             audio=self.audio(),
             start=self._start,
             end=t,
-            speech_end=self._last_voiced if speech_end is None else speech_end,
+            speech_end=speech_end,
             voiced_s=self._voiced * FRAME_S,
             peak=self._peak,
+            early=early,
         )
         self._in_speech = False
-        self._tail = speech_end is not None  # ended by the quiet clock, Silero may still be high
-        self._shadow = self._silent if speech_end is not None else None  # Silero's count, carried on
+        self._tail = early  # ended by the quiet clock, Silero may still be high
+        self._shadow = self._silent if early else None  # Silero's count, carried on
         self._idle = self._streak = self._soft = 0
         self._clear_segment()
         events.append(Event("end", t, segment))

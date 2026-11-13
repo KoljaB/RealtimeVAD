@@ -29,6 +29,7 @@ def run(segments, **kw):
     for n, p, amp in segments:
         probs += [p] * n
         audio.append(level(n * FRAME, amp))
+    kw.setdefault("early_end", True)  # most tests below are about the quiet clock's early end (off by default)
     kw.setdefault("end_s", 0.24)  # timings below assume 0.24 s on both clocks
     kw.setdefault("quiet_end_s", 0.24)
     vad = VAD(probability=scripted(probs), **kw)
@@ -70,18 +71,55 @@ def test_quiet_clock_beats_lagging_silero():
     assert ev[2].segment.speech_end == pytest.approx(t_quiet)
 
 
-def test_click_restarts_the_quiet_count():
-    # A click (one loud 10 ms block, too short to be sound that re-arms) inside the quiet after
-    # a word: the count starts again at the next quiet block, without a second pause event.
-    # It used to stop for good there, which left a third of all real turn ends to Silero.
+def test_by_default_the_end_is_sileros_and_the_quiet_clock_gives_pause_and_speech_end():
+    # Audio silent after the word, Silero lags 4 frames: the pause comes with the first quiet
+    # block, the end when Silero has counted its 0.24 s, and the segment says when the speech
+    # really stopped. early_end=True ends after 0.24 s of quiet audio instead.
+    segs = SPEECH + [(4, 0.6, 0.0), (12, 0.1, 0.0)]
+    t_quiet = (10 * FRAME + 160) / 16000
+    ev = run(segs, early_end=False)
+    assert [(e.kind, e.source) for e in ev] == [("start", ""), ("pause", "quiet"), ("end", "")]
+    assert ev[1].time == pytest.approx(t_quiet)
+    assert ev[2].time == pytest.approx(22 * F)  # 14 voiced frames + 8 silent ones
+    assert ev[2].segment.speech_end == pytest.approx(t_quiet) and not ev[2].segment.early
+    assert [e.time for e in VAD(probability=scripted([p for n, p, _ in segs for _ in range(n)])).feed(
+        np.concatenate([level(n * FRAME, a) for n, _, a in segs]))] == [e.time for e in ev]  # the default
+    early = run(segs, early_end=True)
+    assert early[2].time == pytest.approx(t_quiet + 0.24) and early[2].segment.early
+
+
+def test_by_default_no_end_in_a_pause_silero_rides_through():
+    # 0.3 s of silence inside an utterance; Silero stays above continue_threshold through it.
+    # The quiet clock alone would end the segment there (early_end=True); the default does not.
+    segs = SPEECH + [(10, 0.6, 0.0), (10, 0.9, 0.1)]
+    assert kinds(run(segs, early_end=False)) == ["start", "pause"]
+    assert kinds(run(segs, early_end=True)) == ["start", "pause", "end", "start"]
+
+
+def test_without_quiet_audio_speech_end_is_sileros_last_voiced_frame():
+    ev = run(SPEECH + [(12, 0.1, 0.05)], early_end=False)  # noise after the word: never quiet
+    assert kinds(ev) == ["start", "pause", "end"] and ev[1].source == "silero"
+    assert ev[2].segment.speech_end == pytest.approx(10 * F)
+
+
+def word_then(tail, **kw):
+    """A word (frames 0-9), then silence with `tail` = [(sample offset after the word, samples, amp)]."""
     probs = [0.95] * 2 + [0.9] * 8 + [0.6] * 4 + [0.1] * 12
     audio = np.zeros(26 * FRAME, dtype=np.float32)
     audio[: 10 * FRAME] = level(10 * FRAME, 0.1)
-    click = 12 * FRAME
-    audio[click : click + 160] = level(160, 0.1)
-    ev = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24).feed(audio)
+    for at, n, amp in tail:
+        audio[10 * FRAME + at : 10 * FRAME + at + n] = level(n, amp)
+    kw = {"early_end": True, "end_s": 0.24, "quiet_end_s": 0.24, **kw}
+    return VAD(probability=scripted(probs), **kw).feed(audio)
+
+
+def test_click_restarts_the_quiet_count():
+    # A click (one loud 10 ms block, too short to be sound) inside the quiet after a word: the
+    # count starts again at the next quiet block, without a second pause event. It used to
+    # stop for good there, which left a third of all real turn ends to Silero.
+    ev = word_then([(1120, 160, 0.1)])  # exactly one 10 ms block
     assert kinds(ev) == ["start", "pause", "end"]
-    again = 6560 / 16000  # the click (samples 6144-6304) touches two blocks; the next one ends here
+    again = (10 * FRAME + 1120 + 160 + 160) / 16000  # the first quiet block after it ends here
     assert ev[-1].segment.speech_end == pytest.approx(again)
     assert ev[-1].time == pytest.approx(again + 0.24)  # Silero alone: 22 frames = 0.704 s
     assert ev[-1].time < 22 * F
@@ -94,7 +132,7 @@ def test_clicks_that_keep_coming_leave_the_end_to_silero():
     audio[: 10 * FRAME] = level(10 * FRAME, 0.1)
     for at in range(10 * FRAME + 1600, 26 * FRAME - 160, 3200):
         audio[at : at + 160] = level(160, 0.1)
-    ev = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24).feed(audio)
+    ev = VAD(probability=scripted(probs), early_end=True, end_s=0.24, quiet_end_s=0.24).feed(audio)
     assert ev[-1].kind == "end" and ev[-1].time == pytest.approx(22 * F)
 
 
@@ -103,11 +141,11 @@ def test_dc_offset_does_not_hide_the_silence():
     # quiet clock at the same times as without it, and the segment's audio keeps the offset.
     probs = [0.1] * 5 + [0.95] * 2 + [0.9] * 8 + [0.6] * 20
     audio = np.concatenate((level(5 * FRAME, 0.0001), level(10 * FRAME, 0.1), level(20 * FRAME, 0.0001)))
-    clean = VAD(probability=scripted(probs)).feed(audio)
+    clean = VAD(probability=scripted(probs), early_end=True).feed(audio)
     assert kinds(clean) == ["start", "pause", "end"] and clean[1].source == "quiet"
     assert clean[2].time == pytest.approx((15 * FRAME + 160) / 16000 + 0.24)  # Silero alone: 35 frames + 0.24 s
     for offset in (0.02, -0.3):
-        ev = VAD(probability=scripted(probs)).feed(audio + np.float32(offset))
+        ev = VAD(probability=scripted(probs), early_end=True).feed(audio + np.float32(offset))
         assert [(e.kind, e.source) for e in ev] == [(e.kind, e.source) for e in clean]
         assert [e.time for e in ev] == pytest.approx([e.time for e in clean])
         assert float(np.mean(ev[2].segment.audio)) == pytest.approx(offset, rel=1e-3)
@@ -117,7 +155,7 @@ def test_dc_offset_that_appears_mid_stream_settles_within_100_ms():
     probs = [0.95] * 2 + [0.9] * 8 + [0.6] * 20
     audio = np.concatenate((level(10 * FRAME, 0.1), np.zeros(20 * FRAME, np.float32)))
     audio[10 * FRAME:] += 0.05  # the silence after the word sits on an offset the word did not have
-    ev = VAD(probability=scripted(probs)).feed(audio)
+    ev = VAD(probability=scripted(probs), early_end=True).feed(audio)
     assert kinds(ev) == ["start", "pause", "end"] and ev[1].source == "quiet"
     assert 10 * F < ev[1].time <= 10 * F + 0.1
 
@@ -127,7 +165,7 @@ def test_sustained_energy_rearms_quiet_clock():
     audio = level(32 * FRAME, 0.1)
     audio[10 * FRAME : 12 * FRAME] = 0.0  # short quiet, arms
     audio[24 * FRAME :] = 0.0  # real end after 12 loud frames (> 64 ms) rearm
-    ev = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24).feed(audio)
+    ev = VAD(probability=scripted(probs), early_end=True, end_s=0.24, quiet_end_s=0.24).feed(audio)
     assert kinds(ev) == ["start", "pause", "pause", "end"]
     t_quiet = 12480 / 16000  # first fully quiet 10 ms block after sample 12288
     assert ev[2].time == pytest.approx(t_quiet)
@@ -174,7 +212,7 @@ def test_lookback_off_and_short_opening_use_plain_preroll():
 
 def test_lookback_never_crosses_playback():
     probs = [0.0] * 20 + [0.3] * 15 + [0.95] * 2
-    vad = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24)
+    vad = VAD(probability=scripted(probs), early_end=True, end_s=0.24, quiet_end_s=0.24)
     vad.feed(level(20 * FRAME, 1e-4))
     vad.feed(level(15 * FRAME, 0.01), playback=True)
     ev = vad.feed(level(2 * FRAME, 0.1))
@@ -186,8 +224,8 @@ def test_chunking_and_int16_are_equivalent():
     probs = [0.95] * 2 + [0.9] * 8 + [0.6] * 20
     audio = np.zeros(30 * FRAME, dtype=np.float32)
     audio[: 10 * FRAME] = level(10 * FRAME, 0.1)
-    whole = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24).feed(audio)
-    vad = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24)
+    whole = VAD(probability=scripted(probs), early_end=True, end_s=0.24, quiet_end_s=0.24).feed(audio)
+    vad = VAD(probability=scripted(probs), early_end=True, end_s=0.24, quiet_end_s=0.24)
     pcm = (audio * 32767).astype(np.int16).tobytes()
     parts = []
     for i in range(0, len(pcm), 1234):
@@ -208,7 +246,7 @@ def test_audio_so_far_covers_everything_fed_since_preroll():
     signal = level(42 * FRAME, 0.1)
     signal[: 20 * FRAME] = 0.05
     signal += np.arange(len(signal), dtype=np.float32) * 1e-8  # every sample distinct
-    vad = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24)
+    vad = VAD(probability=scripted(probs), early_end=True, end_s=0.24, quiet_end_s=0.24)
     seen = []
     for i in range(0, len(signal), 1000):
         seen += [(e.kind, i + 1000, vad.audio()) for e in vad.feed(signal[i : i + 1000])]
@@ -269,11 +307,11 @@ def test_steady_noise_close_under_the_speaker_still_gets_an_early_end():
     # Noise 14 dB below the speaker never falls under the quiet threshold (20 dB below them, or
     # 15 dB below their latest level). What is left after subtracting the room's spectrum does.
     probs, audio, off = noisy_scene()
-    ev = VAD(probability=scripted(probs)).feed(audio)
+    ev = VAD(probability=scripted(probs), early_end=True).feed(audio)
     assert kinds(ev) == ["start", "pause", "end"] and ev[1].source == "quiet"
     assert off < ev[1].time <= off + 0.03  # speech-off within 30 ms; Silero's first silent frame: 0.384 s
     assert ev[2].time == pytest.approx(ev[1].time + 0.28)  # the noisy wait
-    silero = VAD(probability=scripted(probs), noise_subtract_db=None).feed(audio)
+    silero = VAD(probability=scripted(probs), early_end=True, noise_subtract_db=None).feed(audio)
     assert [(e.kind, e.source) for e in silero] == [("start", ""), ("pause", "silero"), ("end", "")]
     assert silero[2].time == pytest.approx(off + 20 * F)  # 12 frames of lag + 8 of silence
 
@@ -284,7 +322,7 @@ def test_soft_speech_in_that_noise_is_not_silence():
     # give a pause) and Silero's count ends the segment.
     for tail_db in (-12.0, -18.0):
         probs, audio, off = noisy_scene(tail_db=tail_db)
-        ev = VAD(probability=scripted(probs)).feed(audio)
+        ev = VAD(probability=scripted(probs), early_end=True).feed(audio)
         assert [e.kind for e in ev if e.kind != "pause"] == ["start", "end"]
         assert ev[-1].time == pytest.approx(off + 20 * F)
 
@@ -292,12 +330,12 @@ def test_soft_speech_in_that_noise_is_not_silence():
 def test_noise_subtraction_leaves_clean_input_alone_and_gives_no_end_in_loud_noise():
     # Noise far below the floor: the level decides, exactly as without the subtraction.
     probs, audio, _ = noisy_scene(snr_db=40.0)
-    with_it = VAD(probability=scripted(probs)).feed(audio)
-    without = VAD(probability=scripted(probs), noise_subtract_db=None).feed(audio)
+    with_it = VAD(probability=scripted(probs), early_end=True).feed(audio)
+    without = VAD(probability=scripted(probs), early_end=True, noise_subtract_db=None).feed(audio)
     assert [(e.kind, e.time, e.source) for e in with_it] == [(e.kind, e.time, e.source) for e in without]
     # Noise 4 dB under the speaker leaves too much behind: Silero's count ends the segment.
     probs, audio, off = noisy_scene(snr_db=4.0)
-    ev = VAD(probability=scripted(probs)).feed(audio)
+    ev = VAD(probability=scripted(probs), early_end=True).feed(audio)
     assert [e.kind for e in ev if e.kind != "pause"] == ["start", "end"]
     assert ev[-1].time == pytest.approx(off + 20 * F)
 
@@ -475,7 +513,7 @@ def test_restore_comes_when_it_would_without_the_quiet_clock():
 
     def restored_at(**kw):
         m = Restorable([p for n, p, _ in segs for _ in range(n)])
-        vad = VAD(probability=m, end_s=0.24, quiet_end_s=0.24, **kw)
+        vad = VAD(probability=m, early_end=True, end_s=0.24, quiet_end_s=0.24, **kw)
         for i, frame in enumerate(np.concatenate([level(n * FRAME, a) for n, _, a in segs]).reshape(-1, FRAME)):
             vad.feed(frame)
             if m.restores:
@@ -499,7 +537,7 @@ def test_integration_hooks_frames_pause_sources_and_running_segment():
     probs = [0.95] * 2 + [0.9] * 8 + [0.6] * 3 + [0.1] * 3
     audio = np.zeros(16 * FRAME, dtype=np.float32)
     audio[: 10 * FRAME] = level(10 * FRAME, 0.1)
-    vad = VAD(probability=scripted(probs), end_s=0.24, quiet_end_s=0.24, frame_events=True)
+    vad = VAD(probability=scripted(probs), early_end=True, end_s=0.24, quiet_end_s=0.24, frame_events=True)
     ev = vad.feed(audio)
     frames = [e for e in ev if e.kind == "frame"]
     assert len(frames) == 16 and frames[1].frame.in_speech and frames[0].frame.streak == 1
@@ -530,7 +568,7 @@ def test_restore_point_is_never_taken_from_playback_echo():
 
     probs = [0.95] * 10 + [0.95] * 10
     m = Model(probs)
-    vad = VAD(probability=m, end_s=0.24, quiet_end_s=0.24)
+    vad = VAD(probability=m, early_end=True, end_s=0.24, quiet_end_s=0.24)
     vad.feed(level(10 * FRAME, 0.1))
     user = m.snapshots
     assert user == 10  # the user's confident speech sets the restore point

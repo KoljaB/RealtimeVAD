@@ -76,6 +76,11 @@ if lab.available():
     GATED = [(single("gated", c, ("level", -30), ("white", -65), ("gate", -55)), c) for c in S8]
     CLIPPED = [(single("clipped", c, ("level", -10), ("gain", 25)), c) for c in S8]
     DC = [(single("dc", c, ("dc", 0.02)), c) for c in S8]
+    # the default (early_end=False): clean, quiet, phone and noisy clips
+    DEFAULT = ([(single("default", c, kw={"early_end": False}), c) for c in S24]
+               + [(single("default-55", c, ("level", -55), kw={"early_end": False}), c) for c in S8]
+               + [(single("default-phone", c, ("level", -45), ("phone",), kw={"early_end": False}), c) for c in S8]
+               + [(single("default-street", c, ("level", -30), ("noise", NOISE["street_1"]["file"], 10), kw={"early_end": False}), c) for c in S8])
     NO_DC = [(single("dc-none", c), c) for c in S8]  # the same clips without the offset
     CLICKS = case("clicks", [(NOISE["fan_1"]["file"], [("cut", 0, 20), ("gain", -200), ("white", -70), ("clicks", 0.7)])])
     BACKCHANNEL = [(case(f"backchannel/{c['id']}", [(c["file"], [])]), c) for c in lab.clips("backchannel")]
@@ -103,6 +108,26 @@ def test_clean_speech_in_eight_languages(runs, guard):
     guard("ends decided while the speaker talks", total(rows, "premature"), "<=", 0)
     guard("start reported after the speech began, worst clip", max(values(rows, "start_delay")) * 1000, "<=", 250, "ms")
     guard("last end later than Silero alone, worst clip", max(0.0, -min(values(rows, "end_gain"))) * 1000, "<=", 0, "ms")
+    guard.done()
+
+
+def test_default_ends_where_silero_alone_ends(runs, guard):
+    """Without early_end the quiet clock gives the early pause and the speech-off time, never an end:
+    every segment starts and ends on the frame Silero alone gives it."""
+    _, results = runs
+    differ = pauses = leads = segments = 0
+    for key, _ in DEFAULT:
+        r = results[key]
+        mine = [(s["start"], s["end"]) for s in r["segments"]]
+        theirs = [(s["start"], s["end"]) for s in r["silero_segments"]]
+        differ += mine != theirs
+        segments += len(mine)
+        pauses += sum(k == "pause" and source == "quiet" for k, _, _, source in r["events"])
+        leads += sum(a["speech_end"] is not None and b["speech_end"] is not None and a["speech_end"] < b["speech_end"] - 1e-6
+                     for a, b in zip(r["segments"], r["silero_segments"]))
+    guard("streams whose segments differ from Silero alone, of 48", differ, "<=", 0)
+    guard("pauses from the quiet clock", pauses, ">=", 48)
+    guard(f"segments whose speech-off time is before Silero's last voiced frame, of {segments}", leads, ">=", segments // 3)
     guard.done()
 
 

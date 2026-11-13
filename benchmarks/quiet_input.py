@@ -103,7 +103,7 @@ def detect(x, **kw):
                 pauses.append((e.time, e.source))
             elif e.kind == "end":
                 s = e.segment
-                by_quiet = abs(s.end - s.speech_end - 8 * FRAME_S) > 1e-6  # Silero's count ends 8 frames after
+                by_quiet = s.early  # ended by the quiet clock before Silero's count
                 ends.append({"t": s.end, "from": s.end - len(s.audio) / 16000, "start": s.start,
                              "speech_end": s.speech_end, "quiet": by_quiet})
     spans = [(e["from"], e["t"]) for e in ends]
