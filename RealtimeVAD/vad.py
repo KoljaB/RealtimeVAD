@@ -476,6 +476,11 @@ class VAD:
         self._levels(frame, p, level, echo)
         soft = (self.soft_start_s is not None and p >= self._soft_level()
                 and (self._floor is None or level >= self._floor + SOFT_OVER_DB))
+        if self._in_speech:
+            # Only while idle. Speech that resumed loud enough has opened a new segment: inside
+            # it a frame is voiced by Silero's probability alone, or its silence count would
+            # begin over the quiet audio before Silero's does and end it before Silero alone.
+            self._tail = False
         if self._tail:  # after an early end, Silero's fading tail must not open a new segment...
             self._tail = p >= self.continue_threshold
             soft = False  # ...softly at all (a breath after the word would), and not confidently...
