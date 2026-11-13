@@ -10,7 +10,7 @@ compares, at the turn's final speech end:
 It also counts pauses inside the segment that were followed by more speech (false
 speech-off alarms) and estimates the room noise level of each file.
 
-    python benchmarks/speech_off_lead.py <wav dir> <out.json> [processes]
+    python benchmarks/speech_off_lead.py <wav dir> <out.json> [processes] [VAD arguments as JSON]
 """
 
 import glob
@@ -25,6 +25,11 @@ import numpy as np
 from RealtimeVAD import VAD
 
 FRAME_S = 512 / 16000
+OPTIONS = {}  # VAD arguments, e.g. {"pause_mode": "fast"}
+
+
+def _init(options):
+    OPTIONS.update(options)
 
 
 def load(path):
@@ -63,7 +68,7 @@ def vaditerator_end(frames, start_thr=0.5, end_thr=0.35, min_silence_s=0.1):
             triggered = True
         elif triggered and p < end_thr:
             if temp_end is None:
-                temp_end = t - FRAME_S  # Silero records the frame start
+                temp_end = t  # silero_vad sets temp_end = current_sample, the end of the first low frame
             if t - temp_end >= min_silence_s:
                 last_end, triggered, temp_end = t, False, None
     return last_end
@@ -71,7 +76,7 @@ def vaditerator_end(frames, start_thr=0.5, end_thr=0.35, min_silence_s=0.1):
 
 def measure(path):
     x = load(path)
-    vad = VAD(frame_events=True)
+    vad = VAD(frame_events=True, **OPTIONS)
     frames, pauses, ends = [], [], []
     for i in range(0, len(x), 320):
         for e in vad.feed(x[i : i + 320]):
@@ -115,7 +120,8 @@ def measure(path):
 
 def main():
     files = sorted(glob.glob(sys.argv[1].rstrip("/\\") + "/*.wav"))
-    with Pool(int(sys.argv[3]) if len(sys.argv) > 3 else 4) as pool:
+    options = json.loads(sys.argv[4]) if len(sys.argv) > 4 else {}
+    with Pool(int(sys.argv[3]) if len(sys.argv) > 3 else 4, initializer=_init, initargs=(options,)) as pool:
         rows = pool.map(measure, files, chunksize=8)
     json.dump(rows, open(sys.argv[2], "w"), indent=0)
     ok = [r for r in rows if "skip" not in r]

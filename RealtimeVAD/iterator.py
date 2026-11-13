@@ -31,10 +31,13 @@ class _SileroModel:
 
 
 class VADIterator:
-    """Like Silero's ``VADIterator``, but ``end`` comes as soon as the audio goes quiet.
+    """Like Silero's ``VADIterator``: ``end`` is decided when Silero has heard the minimum
+    silence, and its sample is where the audio went quiet (Silero's own lags about 100 ms).
 
     ``model`` may be a Silero model (used as given) or None (the bundled one).
-    Extra keyword arguments go to :class:`VAD`. Chunks may have any size.
+    Extra keyword arguments go to :class:`VAD`: ``early_end=True`` decides ``end`` as soon as
+    the audio has been quiet that long. ``.vad`` gives the events, among them the early
+    ``pause``. Chunks may have any size.
     """
 
     def __init__(

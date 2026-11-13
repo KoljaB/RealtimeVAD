@@ -76,11 +76,21 @@ if lab.available():
     GATED = [(single("gated", c, ("level", -30), ("white", -65), ("gate", -55)), c) for c in S8]
     CLIPPED = [(single("clipped", c, ("level", -10), ("gain", 25)), c) for c in S8]
     DC = [(single("dc", c, ("dc", 0.02)), c) for c in S8]
+    # the default (early_end=False): clean, quiet, phone and noisy clips
+    DEFAULT = ([(single("default", c, kw={"early_end": False}), c) for c in S24]
+               + [(single("default-55", c, ("level", -55), kw={"early_end": False}), c) for c in S8]
+               + [(single("default-phone", c, ("level", -45), ("phone",), kw={"early_end": False}), c) for c in S8]
+               + [(single("default-street", c, ("level", -30), ("noise", NOISE["street_1"]["file"], 10), kw={"early_end": False}), c) for c in S8])
+    NO_DC = [(single("dc-none", c), c) for c in S8]  # the same clips without the offset
     CLICKS = case("clicks", [(NOISE["fan_1"]["file"], [("cut", 0, 20), ("gain", -200), ("white", -70), ("clicks", 0.7)])])
     BACKCHANNEL = [(case(f"backchannel/{c['id']}", [(c["file"], [])]), c) for c in lab.clips("backchannel")]
     TURN_START = [(case(f"turn-start/{c['id']}", [(c["file"], [])]), c) for c in lab.clips("turn_start")]
     HESITATION = [(case(f"hesitation/{c['id']}", [(c["file"], [("pad", 0, 1.0)])]), c) for c in lab.clips("hesitation")]
 
+    # 3.5 s of steady room noise after the speech: Silero is restored about a second into it
+    ROOM_PAUSE = {name: [(single(f"room-pause-{name}", c, ("level", -30), ("pad", 0, 3.5), *fx), c) for c in S24]
+                  for name, fx in (("white-52", [("white", -52)]), ("white-60", [("white", -60)]),
+                                   ("fan", [("noise", NOISE["fan_1"]["file"], 25)]))}
     # a soft word ending: the last 0.4 s of the speech fade by 15 dB (set per clip in the test)
     # streams of several utterances
     TALK = [(c["file"], [("level", -30), ("pad", 0.3, 1.5), ("white", -65)]) for c in S24[::4]]
@@ -102,6 +112,26 @@ def test_clean_speech_in_eight_languages(runs, guard):
     guard("ends decided while the speaker talks", total(rows, "premature"), "<=", 0)
     guard("start reported after the speech began, worst clip", max(values(rows, "start_delay")) * 1000, "<=", 250, "ms")
     guard("last end later than Silero alone, worst clip", max(0.0, -min(values(rows, "end_gain"))) * 1000, "<=", 0, "ms")
+    guard.done()
+
+
+def test_default_ends_where_silero_alone_ends(runs, guard):
+    """Without early_end the quiet clock gives the early pause and the speech-off time, never an end:
+    every segment starts and ends on the frame Silero alone gives it."""
+    _, results = runs
+    differ = pauses = leads = segments = 0
+    for key, _ in DEFAULT:
+        r = results[key]
+        mine = [(s["start"], s["end"]) for s in r["segments"]]
+        theirs = [(s["start"], s["end"]) for s in r["silero_segments"]]
+        differ += mine != theirs
+        segments += len(mine)
+        pauses += sum(k == "pause" and source == "quiet" for k, _, _, source in r["events"])
+        leads += sum(a["speech_end"] is not None and b["speech_end"] is not None and a["speech_end"] < b["speech_end"] - 1e-6
+                     for a, b in zip(r["segments"], r["silero_segments"]))
+    guard("streams whose segments differ from Silero alone, of 48", differ, "<=", 0)
+    guard("pauses from the quiet clock", pauses, ">=", 48)
+    guard(f"segments whose speech-off time is before Silero's last voiced frame, of {segments}", leads, ">=", segments // 3)
     guard.done()
 
 
@@ -214,8 +244,8 @@ def test_muting_noise_suppression(runs, guard):
 
 
 def test_clipping_and_dc_offset(runs, guard):
-    """Speech 15 dB into clipping, and a DC offset of -34 dBFS under the speech (it hides the
-    silence from the quiet clock, so Silero's count ends the segments: slower, nothing lost)."""
+    """Speech 15 dB into clipping, and a DC offset of -34 dBFS under the speech (levels are
+    measured without it, so the quiet clock ends the segments as it does without the offset)."""
     for name, keyed in (("clipped", CLIPPED), ("DC offset", DC)):
         rows = stats(runs, keyed)
         guard(f"{name}: clips with a segment, of 8", total(rows, "detected"), ">=", 8)
@@ -223,6 +253,13 @@ def test_clipping_and_dc_offset(runs, guard):
               min(a - b for a, b in zip(values(rows, "covered"), values(rows, "covered_silero"))), ">=", -0.02)
         guard(f"{name}: ends decided while the speaker talks", total(rows, "premature"), "<=", total(rows, "premature_silero"))
         guard(f"{name}: last end later than Silero alone, worst clip", max(0.0, -min(values(rows, "end_gain"), default=0)) * 1000, "<=", 0, "ms")
+    _, results = runs
+    plain = stats(runs, NO_DC)
+    guard("DC offset: ends by the quiet clock, of those without the offset", total(rows, "quiet_ends"), ">=", total(plain, "quiet_ends"))
+    guard("DC offset: ends by the quiet clock", total(rows, "quiet_ends"), ">=", 8)
+    moved = max(abs(lab.last_end(results[a]) - lab.last_end(results[b])) for (a, _), (b, _) in zip(DC, NO_DC))
+    # Silero itself hears the offset: its probabilities, and so an end, can move by a frame
+    guard("DC offset: last end moved against the same clip without it, worst clip", moved * 1000, "<=", 33, "ms")
     guard.done()
 
 
@@ -321,6 +358,21 @@ def test_quiet_speaker_after_a_loud_one(runs, guard):
         found += lab.covered(r, ref, offset) > 0.9
     guard("quiet second speakers found, of 8", found, ">=", 7)
     guard("ends decided while the quiet speaker talks", premature, "<=", premature_silero + 1)
+    guard.done()
+
+
+def test_no_phantom_speech_in_the_room_after_the_user(runs, guard):
+    """The user speaks at -30 dBFS, then 3.5 s of steady room noise (white at -52 and -60 dBFS,
+    a fan 25 dB below the speech). Silero's recovery about a second into it must not make
+    the noise sound like speech (up to 0.0.5 it restored a state from inside the speech,
+    which scored the next frames ~0.9 whatever they held)."""
+    refs, results = runs
+    for name, keyed in ROOM_PAUSE.items():
+        phantom = 0
+        for key, clip in keyed:
+            off = refs[clip["file"]]["off"] + OFF
+            phantom += sum(s["start"] > off + 0.3 for s in results[key]["segments"])
+        guard(f"{name}: segments that start in the room noise after the speech, of 24 clips", phantom, "<=", 0)
     guard.done()
 
 

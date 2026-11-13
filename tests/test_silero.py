@@ -25,13 +25,15 @@ def model(probs, restore_s=1.0):
     return s
 
 
-def test_restores_state_of_last_confident_speech_after_one_second_of_low_p():
+def test_restores_state_where_it_let_go_of_confident_speech_after_one_second_of_low_p():
     probs = [0.95, 0.5] + [0.0] * 32 + [0.0]
     m = model(probs)
     for _ in probs:
         m(np.zeros(512, np.float32))
     assert m.restores == 1
-    assert m._session.states_in[-1] == 1.0  # state saved after frame 1 (the p >= 0.9 one)
+    # state saved after frame 3, the first p < 0.5 after p >= 0.9: a state from inside the
+    # confident speech would score whatever follows the restore as speech
+    assert m._session.states_in[-1] == 3.0
 
 
 def test_zero_state_before_any_confident_speech_and_off_switch():

@@ -19,6 +19,31 @@ EPS = 1e-9
 LEVEL_S = 3.0  # the speaker's level is the median of the segment's last 3 s of speech frames...
 LEVEL_MIN_S = 0.25  # ...once it has this much; until then the previous segment's level counts
 SOFT_OVER_DB = 10.0  # a soft start must be this far above the idle floor (steady noise Silero is unsure about is not)
+# Levels (the quiet clock's blocks, the speaker's and the room's level) are measured behind a
+# one-pole 20 Hz high-pass, so a DC offset in the input is not mistaken for sound.
+_DC_R = math.exp(-2.0 * math.pi * 20.0 / SAMPLE_RATE)
+_DC_GAIN = 0.5 * (1.0 + _DC_R)  # unity gain at the top of the band
+_DC_POW = _DC_R ** np.arange(FRAME, dtype=np.float64)
+_DC_INV = 1.0 / _DC_POW
+# Steady noise close under the speaker (a noisy phone line, a raw microphone in a room) never
+# falls below the quiet threshold. There a 10 ms block also counts as quiet when what is left
+# of its spectrum after subtracting the room's is below the quiet floor: 20 ms Hann windows,
+# 16 mel-spaced bands from 100 Hz to 8 kHz.
+_NS_WIN = 2 * BLOCK
+_NS_HZ = 700.0 * (10.0 ** (np.linspace(np.log10(1 + 100 / 700), np.log10(1 + 8000 / 700), 17)) - 1.0)
+
+
+def _ns_bands(n: int) -> tuple:
+    """(Hann window, first bin of each band, scale that makes band powers add up to the mean square)."""
+    hann = np.hanning(n + 1)[:-1]
+    return hann, np.searchsorted(np.fft.rfftfreq(n, 1 / SAMPLE_RATE), _NS_HZ[:-1]), 2.0 / (n * float(np.sum(hann * hann)))
+
+
+_NS_BLOCK, _NS_FRAME = _ns_bands(_NS_WIN), _ns_bands(FRAME)  # a block is judged on 20 ms, the room is learned per frame
+NS_RISE_DB = 3.0 * FRAME_S  # the room's spectrum falls at once and rises 3 dB/s, like the idle floor: soft speech
+# Silero is unsure about barely lifts it, and a word's tail is forgotten in the next frame
+NS_NEAR_DB = 3.0  # used only where the room is at most this far below the quiet floor (the level alone is blind there)
+NS_MIN_SNR_DB = 6.0  # ...and at least this far below the speaker
 
 
 @dataclass(frozen=True)
@@ -26,9 +51,10 @@ class Segment:
     audio: np.ndarray  # float32, 16 kHz, from just before the start up to the end
     start: float
     end: float  # stream time the end was decided
-    speech_end: float  # when the speech actually stopped
+    speech_end: float  # when the speech actually stopped (from the quiet clock where it saw it, else Silero's last voiced frame)
     voiced_s: float
     peak: float
+    early: bool = False  # ended by the quiet clock before Silero's count (only with early_end=True)
 
 
 @dataclass(frozen=True)
@@ -47,19 +73,36 @@ class Frame:
 
 @dataclass(frozen=True)
 class Event:
-    kind: str  # "onset" | "start" | "pause" | "end" | "frame"
+    kind: str  # "onset" | "start" | "pause" | "resume" | "end" | "frame"
     time: float
     segment: Optional[Segment] = None  # set on "end"
     source: str = ""  # "pause": "quiet" (10 ms clock) or "silero" (first unvoiced frame)
     frame: Optional[Frame] = None  # set on "frame"
 
 
+class _ByMode:
+    def __repr__(self) -> str:
+        return "<set by pause_mode>"
+
+
+_MODE = _ByMode()
+# How early "pause" comes against how often it is too early (inside the last word). One choice
+# sets the parameters below; each of them still wins when given. Measured in README.md.
+#   accurate  a "pause" is repeated when sound came back, so the last one is rarely early
+#   balanced  one "pause" per stretch of speech, and audio counts as quiet 3 dB sooner
+#   fast      the same, 6 dB sooner
+PAUSE_MODES = {
+    "accurate": dict(repause_s=0.02, quiet_rms=0.002, floor_margin_db=20.0, speech_margin_db=15.0, noise_margin_db=15.0),
+    "balanced": dict(repause_s=None, quiet_rms=0.0028, floor_margin_db=17.0, speech_margin_db=12.0, noise_margin_db=18.0),
+    "fast": dict(repause_s=None, quiet_rms=0.004, floor_margin_db=14.0, speech_margin_db=9.0, noise_margin_db=21.0),
+}
+
+
 def _frames(seconds: float) -> int:
     return math.ceil(seconds / FRAME_S - EPS)
 
 
-def _dbfs(x: np.ndarray) -> float:
-    power = float(np.mean(x * x))
+def _dbfs(power: float) -> float:
     return max(-100.0, 10.0 * math.log10(power)) if power > 0.0 else -100.0
 
 
@@ -82,12 +125,15 @@ class VAD:
         continue_threshold: float = 0.45,
         start_s: float = 0.064,
         end_s: float = 0.24,  # Silero's silence count
-        quiet_end_s: Optional[float] = None,  # quiet clock; default end_s
-        noisy_extra_s: float = 0.04,  # added when room noise has raised the quiet threshold
-        quiet_rms: float = 0.002,
-        noise_margin_db: float = 15.0,
-        speech_margin_db: float = 15.0,
-        floor_margin_db: Optional[float] = 20.0,  # quiet input: quiet_rms drops to this far below the speaker; None = fixed
+        early_end: bool = False,  # the quiet clock may end a segment before Silero's count does
+        quiet_end_s: Optional[float] = None,  # ...after this much quiet; default end_s
+        noisy_extra_s: float = 0.04,  # ...plus this when room noise has raised the quiet threshold
+        pause_mode: str = "accurate",  # or "balanced", "fast": an earlier "pause" that is more often too early (PAUSE_MODES)
+        quiet_rms: float = _MODE,  # accurate: 0.002
+        noise_margin_db: float = _MODE,  # accurate: 15
+        speech_margin_db: float = _MODE,  # accurate: 15
+        floor_margin_db: Optional[float] = _MODE,  # accurate: 20. Quiet input: quiet_rms drops to this far below the speaker; None = fixed
+        noise_subtract_db: Optional[float] = 4.0,  # steady noise near the speaker: subtract the room's spectrum, this far over-estimated; None = off
         preroll_s: float = 0.30,
         lookback_s: float = 1.0,
         restore_s: float = 1.0,  # Silero recovery after this much p < 0.1 over real (non-zero) audio; 0 = off
@@ -96,8 +142,11 @@ class VAD:
         extend: Optional[Callable[[float], Optional[float]]] = None,
         frame_events: bool = False,
         onset_events: bool = False,  # "onset" at the first confident frame, before "start" confirms it
+        resume_events: bool = False,  # "resume" when the speech went on after a "pause"
         confirm_threshold: Optional[float] = None,  # each frame of the start debounce; default continue_threshold
         rearm_s: Optional[float] = None,  # sound that re-arms the quiet clock; default start_s
+        repause_s: Optional[float] = _MODE,  # accurate: 0.02. Sound after a "pause" that lets the next quiet block report a new one; None = off
+        repause_room_db: float = 6.0,  # ...counted only this far above the learned room noise
         soft_start_s: Optional[float] = 0.128,  # a start also after this long at soft_start_threshold; None = off
         soft_start_threshold: float = 0.5,
         normalize_to_dbfs: Optional[float] = None,  # quiet input: amplify what Silero sees up to this speech level (try -30)
@@ -108,10 +157,27 @@ class VAD:
             from .silero import Silero
 
             probability = Silero(restore_s=0)  # restores are decided here, from audio evidence
+        # pause_mode chooses how early "pause" comes: it only sets the five parameters in
+        # PAUSE_MODES, and one given here wins. It changes "pause" (and "resume", and the
+        # speech_end a segment reports), never "start" or the default "end".
+        if pause_mode not in PAUSE_MODES:
+            raise ValueError(f"pause_mode must be one of {', '.join(PAUSE_MODES)}, not {pause_mode!r}")
+        mode = PAUSE_MODES[pause_mode]
+        self.pause_mode = pause_mode
+        quiet_rms = mode["quiet_rms"] if quiet_rms is _MODE else quiet_rms
+        noise_margin_db = mode["noise_margin_db"] if noise_margin_db is _MODE else noise_margin_db
+        speech_margin_db = mode["speech_margin_db"] if speech_margin_db is _MODE else speech_margin_db
+        floor_margin_db = mode["floor_margin_db"] if floor_margin_db is _MODE else floor_margin_db
+        repause_s = mode["repause_s"] if repause_s is _MODE else repause_s
         self._p = probability
         self._extend = extend
         self._frame_events = frame_events
         self._onset_events = onset_events
+        # A "pause" is a guess. "resume" takes it back: sound came back after it (what allows a
+        # new "pause": repause_s of sound clearly above the room, sound that re-arms the quiet
+        # clock, or Silero hearing speech again after a silent frame). At most one per "pause";
+        # a consumer cancels the work it started at the "pause" and starts again at the next.
+        self._resume_events = resume_events
         self.start_threshold, self.continue_threshold = start_threshold, continue_threshold
         # After the first confident frame, every frame until start_s is reached must stay at
         # or above this (a click fades out above continue_threshold for a few frames).
@@ -128,10 +194,17 @@ class VAD:
         # it scores 0.5 or more sits at that level, by at most normalize_max_db. Off by default:
         # it also changes what Silero says about speakers a little below that level.
         self.normalize_to_dbfs, self.normalize_max_db = normalize_to_dbfs, normalize_max_db
-        # The quiet clock can only make an end earlier than Silero's count, never later. Over
-        # near-silence it waits end_s like Silero; when room noise has raised the threshold, a
-        # word's fading tail already counts as quiet, so it waits noisy_extra_s longer.
+        # A segment ends when Silero has heard end_s of silence. The quiet clock reports the
+        # speech-off ("pause") about 100 ms before Silero notices it, and tells the segment when
+        # the speech stopped; by default it does not end the segment. Silero's probability lags
+        # that long behind the audio, so an end after end_s of quiet audio comes in pauses of
+        # end_s to end_s + 0.1 s that Silero alone rides through: the same as a shorter end_s,
+        # and it costs the same (more ends inside an utterance). early_end=True allows it: over
+        # near-silence the quiet clock then waits quiet_end_s; when room noise has raised the
+        # threshold, a word's fading tail already counts as quiet, so it waits noisy_extra_s
+        # longer. Either way an end is never later than Silero's count alone gives it.
         self.end_s = end_s
+        self.early_end = early_end
         self.quiet_end_s = end_s if quiet_end_s is None else quiet_end_s
         self.noisy_extra_s = noisy_extra_s
         self.quiet_rms = quiet_rms
@@ -141,12 +214,27 @@ class VAD:
         # distance to their level instead, or those endings would count as silence and end the
         # segment. Measured on real turns: 19 dB still cuts some, 20.5 and 22 dB are equally safe.
         self.floor_margin_db = floor_margin_db
+        # Where steady noise is less than about 20 dB below the speaker, the level never drops
+        # under the quiet floor and the quiet clock would never run. A block is then also quiet
+        # when its spectrum, minus the room's spectrum over-estimated by noise_subtract_db, has
+        # less left than the quiet floor. Speech 20 dB below the speaker that stands out of the
+        # noise in any band keeps its energy; what the noise fully covers Silero does not hear
+        # either. The room's spectrum is tracked from below, so 4 dB is about 2 dB over its mean.
+        self.noise_subtract_db = noise_subtract_db
         self.start_s = start_s
         self._end_frames = max(1, _frames(end_s))
         self._max_frames = max(1, _frames(max_speech_s))
         self._preroll_n = _frames(preroll_s)
         self._lookback_n = max(0, _frames(lookback_s))
         self._rearm_samples = max(1, math.ceil((start_s if rearm_s is None else rearm_s) * SAMPLE_RATE))
+        # A "pause" often comes inside the last word: the level dips under the threshold before a
+        # release, a fricative or a weak last syllable, comes back for 20 to 60 ms and only then
+        # stops. That is too short to re-arm the quiet clock, so the count restarted silently and
+        # the only "pause" was up to several hundred ms early. Now sound of repause_s that is over
+        # the quiet threshold and repause_room_db above the room (not the room's own flutter)
+        # lets the restarted count report a new "pause": the latest one is the best estimate.
+        self.repause_s, self.repause_room_db = repause_s, repause_room_db
+        self._repause_n = 0 if repause_s is None else max(1, math.ceil(repause_s * SAMPLE_RATE / BLOCK - 1e-9))
         self._restore_n = _frames(restore_s) if restore_s > 0 else 0
         self._deaf_n = _frames(deaf_s) if deaf_s > 0 and restore_s > 0 else 0
         self.reset()
@@ -156,8 +244,18 @@ class VAD:
         if reset is not None:
             reset()
         self._n = 0  # samples processed
-        self._block_buf = np.zeros(0, dtype=np.float32)
+        self._block_n = 0  # samples of the running 10 ms block...
+        self._block_energy = self._frame_energy = 0.0  # ...and its and the frame's energy behind the high-pass
+        self._dc_x: Optional[float] = None  # high-pass state: last input sample...
+        self._dc_y = 0.0  # ...and last output sample
         self._frame_buf = np.zeros(0, dtype=np.float32)
+        self._ns_parts: deque = deque()  # the latest 20 ms or a little more, as fed
+        self._ns_len = 0
+        self._ns_noise_db: Optional[np.ndarray] = None  # the room's band powers, dB
+        self._ns_noise = np.zeros(0)  # ...as over-estimated powers...
+        self._ns_total_db = -100.0  # ...and their plain sum
+        self._ns_quiet = False  # the latest block was quiet after subtraction
+        self._floor_db = -100.0  # quiet floor, dBFS
         self._echo_until = -math.inf
         self._history: deque = deque(maxlen=self._preroll_n + self._lookback_n)  # (frame, dBFS, echo)
         self._floor: Optional[float] = None  # idle floor for the onset look-back
@@ -169,11 +267,14 @@ class VAD:
         self._gain_db = 0.0  # normalize_to_dbfs: gain on Silero's input, moving 2 dB per frame...
         self._gain_seen: deque = deque(maxlen=16)  # ...toward the median level of the last half second of speech
         self._shadow: Optional[int] = None  # Silero's silent frames after an early end, until it would end too
+        self._shadow_soft = False  # ...and whether that segment began softly
+        self._shadowed = False
         self._soft_segment = False  # the running segment began that way
         self._quiet = self.quiet_rms if self.quiet_rms > 0 else -1.0  # current quiet threshold (RMS)
         self._tail = False  # waiting for Silero to drop after an early end
         self._low = self._deaf = 0  # frames of p < 0.1 over real audio / over speech-loud audio
         self._quiet_restored = False  # the quiet rule already restored in this pause
+        self._settling = False  # Silero heard the user's confident speech and has not let go of it yet
         self._in_speech = False
         self._idle = 0
         self._streak = 0
@@ -189,6 +290,10 @@ class VAD:
     def start_s(self, seconds: float) -> None:
         self._start_s = seconds
         self._start_frames = max(1, _frames(seconds))
+
+    @property
+    def _ns_on(self) -> bool:
+        return self.noise_subtract_db is not None and self.quiet_rms > 0
 
     @property
     def in_speech(self) -> bool:
@@ -224,48 +329,118 @@ class VAD:
         i = 0
         while i < len(x):
             # advance to the next block or frame boundary, whichever is first
-            step = min(BLOCK - len(self._block_buf), FRAME - len(self._frame_buf), len(x) - i)
+            step = min(BLOCK - self._block_n, FRAME - len(self._frame_buf), len(x) - i)
             part = x[i : i + step]
             i += step
             self._n += step
-            self._block_buf = np.concatenate((self._block_buf, part))
+            self._block_n += step
             self._frame_buf = np.concatenate((self._frame_buf, part))
+            energy = self._energy(part)
+            if self._ns_on:
+                parts = self._ns_parts
+                parts.append(part)
+                self._ns_len += step
+                while self._ns_len - len(parts[0]) >= _NS_WIN:
+                    self._ns_len -= len(parts.popleft())
+            self._block_energy += energy
+            self._frame_energy += energy
             if playback:
                 self._echo_until = self._n / SAMPLE_RATE + 0.5
-            block = self._block_buf if len(self._block_buf) == BLOCK else None
-            quiet = block is not None and self._block_start(block)
+            block = self._block_n == BLOCK
+            if block:
+                self._ns_quiet = self._in_speech and self._ns_on and self._subtracted_quiet()
+            quiet = block and self._block_start(self._block_energy / BLOCK)
+            if self._resume_due:
+                self._resume(self._n / SAMPLE_RATE, events)
             if len(self._frame_buf) == FRAME:
                 frame, self._frame_buf = self._frame_buf, np.zeros(0, dtype=np.float32)
-                self._frame(frame, self._n / SAMPLE_RATE, events)
-            if block is not None:
-                self._block_buf = np.zeros(0, dtype=np.float32)
+                level, self._frame_energy = _dbfs(self._frame_energy / FRAME), 0.0
+                self._frame(frame, level, self._n / SAMPLE_RATE, events)
+            if block:
+                self._block_n, self._block_energy = 0, 0.0
                 self._block_end(quiet, self._n / SAMPLE_RATE, events)
         return events
 
+    def _energy(self, part: np.ndarray) -> float:
+        """Energy of up to one frame of input without its DC offset (only levels use this;
+        Silero and the segment's audio get the input as it came)."""
+        x = part.astype(np.float64)
+        if self._dc_x is None:
+            self._dc_x = float(x[0])  # an offset present from the first sample makes no transient
+        d = np.empty_like(x)
+        d[0] = x[0] - self._dc_x
+        d[1:] = x[1:] - x[:-1]
+        n = len(x)
+        y = _DC_POW[:n] * (_DC_R * self._dc_y + _DC_GAIN * np.cumsum(d * _DC_INV[:n]))
+        self._dc_x = float(x[-1])
+        self._dc_y = float(y[-1]) if abs(y[-1]) > 1e-30 else 0.0
+        return float(np.dot(y, y))
+
+    @staticmethod
+    def _bands(x: np.ndarray, layout: tuple) -> np.ndarray:
+        hann, edges, scale = layout
+        spectrum = np.fft.rfft(x * hann)
+        return np.add.reduceat(spectrum.real ** 2 + spectrum.imag ** 2, edges) * scale
+
+    def _subtracted_quiet(self) -> bool:
+        """Is what the latest 20 ms leave above the room's spectrum below the quiet floor?"""
+        # only where the room is close under the floor (else the level decides, as it always
+        # did) and clearly under the speaker (else it cannot be told from them)
+        if (self._ns_noise_db is None or self._level_db is None
+                or not self._floor_db - NS_NEAR_DB <= self._ns_total_db <= self._level_db - NS_MIN_SNR_DB):
+            return False
+        x = np.concatenate(self._ns_parts)[-_NS_WIN:]
+        if len(x) < _NS_WIN:
+            return False
+        left = float(np.sum(np.maximum(0.0, self._bands(x, _NS_BLOCK) - self._ns_noise)))
+        return left <= 10.0 ** (self._floor_db / 10.0)
+
+    def _learn_spectrum(self, frame: np.ndarray) -> None:
+        """The room's spectrum follows the frames that are not speech."""
+        seen = 10.0 * np.log10(self._bands(frame, _NS_FRAME) + 1e-12)
+        n = self._ns_noise_db
+        self._ns_noise_db = n = seen if n is None else np.minimum(seen, n + NS_RISE_DB)
+        self._ns_noise = 10.0 ** ((n + self.noise_subtract_db) / 10.0)
+        self._ns_total_db = 10.0 * math.log10(float(np.sum(10.0 ** (n / 10.0))) + 1e-12)
+
     # -- per 10 ms block (quiet clock) -------------------------------------
-    def _block_start(self, block: np.ndarray) -> bool:
-        quiet = math.sqrt(float(np.mean(block * block))) <= self._quiet
+    def _block_start(self, power: float) -> bool:
+        quiet = math.sqrt(power) <= self._quiet
+        self._by_subtraction = not quiet and self._ns_quiet
+        quiet = quiet or self._ns_quiet
         if self._t_quiet is not None:
             if quiet:
-                self._loud = 0
+                self._loud = self._clear = 0
                 self._quiet_blocks += self._unbroken
             else:
                 self._unbroken = False
                 self._loud += BLOCK
+                if self._repause_n and not self._again:
+                    n = self._noise_db
+                    if n is None or power >= 10.0 ** ((n + self.repause_room_db) / 10.0):
+                        self._clear += 1
+                        self._again = self._clear >= self._repause_n
+                        self._resume_due = self._again
                 if self._loud >= self._rearm_samples:
                     self._t_quiet, self._loud, self._paused, self._resumed = None, 0, False, False
+                    self._resume_due = True
+                    self._again = False
         return quiet
 
     def _block_end(self, quiet: bool, t: float, events: list[Event]) -> None:
         if not self._in_speech:
             return
-        if self._t_quiet is not None and self._unbroken and t - self._t_quiet + EPS >= self._target(t):
-            self._finish(t, events, speech_end=self._t_quiet)
+        if (self.early_end and self._t_quiet is not None and self._unbroken
+                and t - self._t_quiet + EPS >= self._target(t)):
+            self._finish(t, events, early=True)
         elif quiet and (self._t_quiet is None or not (self._unbroken or self._resumed)):
             # armed, or counting anew after a click or a breath broke the count (speech that
             # Silero heard resume keeps it off until real sound re-arms it)
             self._t_quiet, self._unbroken, self._loud, self._quiet_blocks = t, True, 0, 1
-            raised = self._quiet > self.quiet_rms * (1 + 1e-6)
+            if self._again:  # real sound since the last "pause": this one is a better estimate
+                self._paused = self._again = False
+            self._clear = 0
+            raised = self._quiet > self.quiet_rms * (1 + 1e-6) or self._by_subtraction
             self._quiet_wait = self.quiet_end_s + (self.noisy_extra_s if raised else 0.0)
             self._pause(t, events, "quiet")
 
@@ -278,7 +453,7 @@ class VAD:
         return wait if extra is None else max(wait, extra)
 
     # -- per 32 ms Silero frame --------------------------------------------
-    def _frame(self, frame: np.ndarray, t: float, events: list[Event]) -> None:
+    def _frame(self, frame: np.ndarray, level: float, t: float, events: list[Event]) -> None:
         t0 = time.perf_counter()
         gain = self._gain_db
         if gain >= 0.01:  # never into clipping: a loud frame right after a soft one gets less
@@ -290,7 +465,6 @@ class VAD:
             voiced = p >= self.continue_threshold
         else:  # idle: the first frame needs start_threshold, the rest of the debounce confirm_threshold
             voiced = p >= (self.confirm_threshold if self._streak else self.start_threshold)
-        level = _dbfs(frame)
         echo = t <= self._echo_until
         self._history.append((frame, level, echo))
         if (self.normalize_to_dbfs is not None and p >= 0.5 and not echo
@@ -299,7 +473,7 @@ class VAD:
             want = self.normalize_to_dbfs - sorted(self._gain_seen)[len(self._gain_seen) // 2]
             want = max(0.0, min(self.normalize_max_db, want))
             self._gain_db += max(-2.0, min(2.0, want - self._gain_db))
-        self._levels(p, level, echo)
+        self._levels(frame, p, level, echo)
         soft = (self.soft_start_s is not None and p >= self._soft_level()
                 and (self._floor is None or level >= self._floor + SOFT_OVER_DB))
         if self._tail:  # after an early end, Silero's fading tail must not open a new segment...
@@ -316,6 +490,7 @@ class VAD:
         if voiced:
             if self._silent:
                 self._paused = False
+                self._resume(t, events)
                 if self._t_quiet is not None and t > self._t_quiet:
                     self._unbroken, self._resumed = False, True
             self._voiced += 1
@@ -336,17 +511,24 @@ class VAD:
         if self._silent >= self._end_target:
             self._finish(t, events)
 
-    def _levels(self, p: float, level: float, echo: bool) -> None:
+    def _levels(self, frame: np.ndarray, p: float, level: float, echo: bool) -> None:
         """Learn speech and room-noise levels and set the quiet threshold."""
         # A segment that began softly may never reach start_threshold: its levels are learned
         # from the frames that carry it.
-        carries = p >= (self._soft_level() if self._in_speech and self._soft_segment else self.start_threshold)
+        # (After an early end, until Silero's own count would have ended the segment, everything
+        # the recovery below reads is kept as it would be without the early end.)
+        shadow = self._shadow is not None
+        soft_segment = self._shadow_soft if shadow else self._in_speech and self._soft_segment
+        carries = p >= (self._soft_level() if soft_segment else self.start_threshold)
         if carries:
             s = self._speech_db
             self._speech_db = level if s is None else s + max(-1.0, min(1.0, level - s))
             if self._in_speech:
                 self._learn_level(level)
-        elif p < self.continue_threshold and level > -90.0 and not echo:  # skip gated digital silence
+        noise = not carries and p < self.continue_threshold and not echo
+        if noise and self._ns_on:  # over gated digital silence the room's spectrum falls: nothing to subtract there
+            self._learn_spectrum(frame)
+        if noise and level > -90.0:  # the noise level skips gated digital silence
             n = self._noise_db
             if n is None:
                 self._noise_db = level
@@ -363,29 +545,41 @@ class VAD:
             floor_db = 20.0 * math.log10(self.quiet_rms)
             if self._level_db is not None and self.floor_margin_db is not None:
                 floor_db = min(floor_db, self._level_db - self.floor_margin_db)
-            db = floor_db
+            self._floor_db = db = floor_db
             if self._noise_db is not None:
                 db = max(db, self._noise_db + self.noise_margin_db)
             if self._speech_db is not None:
                 db = max(floor_db, min(db, self._speech_db - self.speech_margin_db))
             self._quiet = 10.0 ** (db / 20.0)
         # Silero's recurrent state drifts in long noisy or near-silent stretches until it is
-        # "deaf" (p ~ 0 through loud speech). Restore the last confident-speech state after a
-        # second of p < 0.1 over real audio (gated digital silence doesn't drift it, and a
-        # restore there only disturbs the next onset), never on a frame that sounds like an
+        # "deaf" (p ~ 0 through loud speech). Restore a state from just after the user's speech
+        # after a second of p < 0.1 over real audio (gated digital silence doesn't drift it, and
+        # a restore there only disturbs the next onset), never on a frame that sounds like an
         # onset; or at once when Silero has ignored speech-loud audio for deaf_s.
         #
-        # The restore point is the state after the *user's* confident speech, never after
-        # the assistant's own voice: a state that last heard playback echo scores following
-        # room noise as speech (p ~0.96 decaying over 0.4 s), which opens phantom segments.
+        # The restore point is the state on the first frame where Silero lets go of the
+        # user's confident speech (p below continue_threshold): it has just heard speech, so
+        # it hears the next speech at once, and it is no longer in speech. A state taken
+        # during confident speech replays a speech tail onto whatever follows the restore
+        # (steady room noise 25 dB below the speaker: p ~0.92 decaying over 0.3 s), and that
+        # opened phantom segments. Never after the assistant's own voice either: a state that
+        # last heard playback echo scores following room noise as speech (p ~0.96 decaying
+        # over 0.4 s).
         restore = getattr(self._p, "restore", None)
         snapshot = getattr(self._p, "snapshot", None)
-        if p >= self.start_threshold and not echo and snapshot is not None:
-            snapshot()
+        if echo:
+            self._settling = False
+        elif p >= self.start_threshold:
+            self._settling = True
+        elif self._settling and p < self.continue_threshold:
+            self._settling = False
+            if snapshot is not None:
+                snapshot()
         # After an early end Silero's own count would still be running. Until it would have
         # ended the segment too, this counts as speech here, so a restore comes exactly when it
         # would without the quiet clock and the probabilities that follow are the same.
         in_speech = self._in_speech or self._shadow is not None
+        self._shadowed = in_speech and not self._in_speech  # this frame: idle here, in speech for Silero alone
         if self._shadow is not None and not self._in_speech:
             self._shadow = 0 if p >= self.continue_threshold else self._shadow + 1
             if self._shadow >= self._end_frames:
@@ -424,7 +618,7 @@ class VAD:
 
     def _idle_frame(self, p: float, voiced: bool, soft: bool, level: float, t: float, events: list[Event]) -> None:
         floor = self._floor
-        if self._lookback_n:
+        if self._lookback_n and not self._shadowed:  # the idle floor is learned where Silero alone is idle too
             if floor is None or level <= floor:
                 self._floor = level if floor is None else floor + (level - floor) * 0.5
             else:
@@ -487,21 +681,36 @@ class VAD:
 
     def _pause(self, t: float, events: list[Event], source: str) -> None:
         if not self._paused:
-            self._paused = True
+            self._paused = self._pause_open = True
             events.append(Event("pause", t, source=source))
 
-    def _finish(self, t: float, events: list[Event], speech_end: Optional[float] = None) -> None:
+    def _resume(self, t: float, events: list[Event]) -> None:
+        self._resume_due = False
+        if self._pause_open:
+            self._pause_open = False
+            if self._resume_events:
+                events.append(Event("resume", t))
+
+    def _finish(self, t: float, events: list[Event], early: bool = False) -> None:
+        # The speech stopped where the unbroken quiet began, if that is before Silero's last
+        # voiced frame (its probability lags behind the audio).
+        speech_end = self._last_voiced
+        if self._t_quiet is not None and self._unbroken and (early or self._t_quiet < speech_end):
+            speech_end = self._t_quiet
         segment = Segment(
             audio=self.audio(),
             start=self._start,
             end=t,
-            speech_end=self._last_voiced if speech_end is None else speech_end,
+            speech_end=speech_end,
             voiced_s=self._voiced * FRAME_S,
             peak=self._peak,
+            early=early,
         )
         self._in_speech = False
-        self._tail = speech_end is not None  # ended by the quiet clock, Silero may still be high
-        self._shadow = self._silent if speech_end is not None else None  # Silero's count, carried on
+        self._tail = early  # ended by the quiet clock, Silero may still be high
+        if early and self._shadow is None:
+            self._shadow_soft = self._soft_segment  # the segment Silero alone is still in
+        self._shadow = self._silent if early else None  # Silero's count, carried on
         self._idle = self._streak = self._soft = 0
         self._clear_segment()
         events.append(Event("end", t, segment))
@@ -512,9 +721,14 @@ class VAD:
         self._voiced = self._silent = 0
         self._end_target = self._end_frames
         self._paused = False
+        self._pause_open = False  # a "pause" was reported and no "resume" since
+        self._resume_due = False
         self._t_quiet: Optional[float] = None
         self._unbroken = False
         self._resumed = False  # Silero heard speech resume inside the running quiet count
         self._loud = 0
+        self._clear = 0  # blocks in a row clearly above the room since the count last ran
+        self._again = False  # ...enough of them: the restarted count reports a new "pause"
         self._quiet_blocks = 0
         self._quiet_wait = self.quiet_end_s
+        self._by_subtraction = False

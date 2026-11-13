@@ -28,6 +28,7 @@ def scenario():
     audio = np.zeros(40 * 512, dtype=np.float32)
     audio[: 10 * 512] = 0.05  # room noise
     audio[10 * 512 : 20 * 512] = 0.1  # speech, then silence
+    audio[1::2] *= -1  # no DC part: a constant value is an offset, not sound
     return FakeSilero(probs), audio
 
 
@@ -39,8 +40,16 @@ def test_same_results_shape_and_silero_start_sample():
     assert out[0] == (10, {"start": 10 * 512 - 480})  # first speech chunk minus 30 ms pad
     chunk, end = out[1]
     assert end == {"end": 10400 + 480}  # speech stopped at the first quiet 10 ms block, plus pad
-    assert chunk == 24  # quiet clock: 10400 + 140 ms (min_silence + 40 ms); Silero's own count ends at chunk 29
+    assert chunk == 28  # decided when Silero has counted its 100 ms, as silero_vad does
     assert not it.triggered
+
+
+def test_early_end_option_ends_after_quiet_audio():
+    model, audio = scenario()
+    out = stream(VADIterator(model, sampling_rate=16000, early_end=True), audio)
+    chunk, end = out[1]
+    assert end == {"end": 10400 + 480}
+    assert chunk == 24  # quiet clock: 10400 + 140 ms (min_silence + 40 ms)
 
 
 def test_return_seconds_and_reset():

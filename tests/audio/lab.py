@@ -1,9 +1,10 @@
 """Audio lab for the edge-case suite: clips, effects, detector runs and measurements.
 
 Every case is one stream of audio (a clip plus effects, or several clips in a row) fed to
-RealtimeVAD in 10 ms chunks. The same frame probabilities are then replayed through a
-second VAD with the quiet clock off (``quiet_rms=0``): that is "Silero alone", on identical
-input. Cases run in a process pool; tests only read the results.
+RealtimeVAD in 10 ms chunks, with ``early_end=True`` unless the case says otherwise: most
+tests guard what the quiet clock's early end may cost. The same frame probabilities are then
+replayed through a second VAD with the quiet clock off (``quiet_rms=0``): that is "Silero
+alone", on identical input. Cases run in a process pool; tests only read the results.
 
 The reference for "the speaker is talking" comes from the clean clip: frames Silero scores
 p >= 0.5 inside a Silero segment that are no more than 20 dB below the speaker's level and
@@ -186,7 +187,7 @@ def detect(x, playback=(), chunk=CHUNK, probability=None, **kw):
             if e.kind == "end":
                 s = e.segment
                 segments.append({"from": s.end - len(s.audio) / SR, "start": s.start, "speech_end": s.speech_end,
-                                 "end": s.end, "quiet": abs(s.end - s.speech_end - 8 * FRAME_S) > 1e-6})
+                                 "end": s.end, "quiet": s.early})
     running = vad.segment()
     if running is not None:
         segments.append({"from": len(x) / SR - len(running.audio) / SR, "start": running.start,
@@ -231,7 +232,7 @@ def run_case(case: dict) -> dict:
     x = np.concatenate(pieces)
     if case.get("post"):
         x = apply(x, case["post"], 0.0, rng)
-    kw = case.get("kw", {})
+    kw = {"early_end": True, **case.get("kw", {})}  # the suite guards the early end; DEFAULT cases turn it off
     p, events, segments = detect(x, playback=case.get("playback", ()), chunk=case.get("chunk", CHUNK), **kw)
     _, s_events, s_segments = detect(x, playback=case.get("playback", ()), probability=_scripted(p),
                                      **{**kw, "quiet_rms": 0})
