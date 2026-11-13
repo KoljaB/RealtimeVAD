@@ -88,8 +88,8 @@ async def test_a_pause_that_is_the_end_costs_one_request_and_the_final_repeats_t
     events = await run(LEAD + SPEECH + LAGGING, wrapped)
     assert events == [(S.START_OF_SPEECH, None), (S.PREFLIGHT_TRANSCRIPT, "text 1"), (S.END_OF_SPEECH, None),
                       (S.FINAL_TRANSCRIPT, "text 1")]
-    # the request held the padding and the speech up to 0.1 s after the audio went quiet
-    assert wrapped.requests == [pytest.approx(T_QUIET + 0.1, abs=0.04)]
+    # the request held the padding and the speech up to 0.15 s after the audio went quiet
+    assert wrapped.requests == [pytest.approx(T_QUIET + 0.15, abs=0.04)]
 
 
 async def test_speech_that_goes_on_after_the_pause_drops_that_transcript():
@@ -170,26 +170,32 @@ async def test_a_repeated_pause_replaces_the_first_one():
     events = await run(segments, wrapped, on_pause=pauses.append)
     assert len(pauses) == 2 and pauses[1].timestamp == pytest.approx(pauses[0].timestamp + 7 * F, abs=0.011)
     assert wrapped.cancelled == 1 and len(wrapped.requests) == 2  # the first request was dropped
-    assert wrapped.requests[1] == pytest.approx(wrapped.requests[0] + 7 * F, abs=0.04)  # asked again 0.1 s after the second
+    assert wrapped.requests[1] == pytest.approx(wrapped.requests[0] + 7 * F, abs=0.04)  # asked again 0.15 s after the second
     assert [e for e in events if e[0] in (S.PREFLIGHT_TRANSCRIPT, S.FINAL_TRANSCRIPT)] == [
         (S.PREFLIGHT_TRANSCRIPT, "text 2"), (S.FINAL_TRANSCRIPT, "text 2")]
 
 
-REPAUSE = "repause_s" in inspect.signature(realtimevad.vad._Core.__init__).parameters
-
-
-@pytest.mark.skipif(not REPAUSE, reason="this RealtimeVAD reports one pause per stretch of Silero silence")
-async def test_sound_that_silero_does_not_hear_restarts_the_pause_only_while_its_own_count_is_short():
-    # 128 ms of quiet audio, then 64 ms of sound that Silero does not hear as voice; the core reports
-    # a second pause both times. Silero lags (its count is at 32 ms when the sound comes) or does not (128 ms).
-    for lagging, requests in ((3, 2), (0, 1)):
-        segments = LEAD + SPEECH + [(lagging, 0.6, 0.0), (4 - lagging, 0.1, 0.0), (2, 0.1, 0.1), (30, 0.1, 0.0)]
+@pytest.mark.parametrize("mode", ["accurate", "balanced", "fast"])
+async def test_sound_that_silero_does_not_hear_restarts_the_pause_only_while_its_own_count_is_short(mode):
+    # 192 ms of quiet audio, then 64 ms of sound that Silero does not hear as voice: long enough to re-arm
+    # the quiet clock, so the core reports a second pause in every mode. The wrapper reads the raw silence
+    # and does the same in all three. Silero lags (its count is at 32 ms when the sound comes) or does not (192 ms).
+    for lagging, requests in ((5, 2), (0, 1)):
+        segments = LEAD + SPEECH + [(lagging, 0.6, 0.0), (6 - lagging, 0.1, 0.0), (2, 0.1, 0.1), (30, 0.1, 0.0)]
         pauses = []
         wrapped = Whisperish(takes=0.2)
-        events = await run(segments, wrapped, on_pause=pauses.append, vad_options={})
+        events = await run(segments, wrapped, on_pause=pauses.append, vad_options={"pause_mode": mode})
         assert len(pauses) == 2
-        # under ``pause`` (0.1 s) of Silero silence the request is made anew; over it, a noise
+        # under ``pause`` (0.15 s) of Silero silence the request is made anew; over it, a noise
         # after the last word does not throw the transcript away
         assert len(wrapped.requests) == requests and wrapped.cancelled == requests - 1
         assert [e for e in events if e[0] in (S.PREFLIGHT_TRANSCRIPT, S.FINAL_TRANSCRIPT)] == [
             (S.PREFLIGHT_TRANSCRIPT, f"text {requests}"), (S.FINAL_TRANSCRIPT, f"text {requests}")]
+
+
+async def test_pause_mode_reaches_the_core_and_a_wrong_one_is_refused():
+    assert realtimevad.VAD.load().stream()._new_core().pause_mode == "accurate"
+    core = realtimevad.VAD.load(pause_mode="fast").stream()._new_core()
+    assert core.pause_mode == "fast" and core.repause_s is None
+    with pytest.raises(ValueError):
+        realtimevad.VAD.load(pause_mode="eager")

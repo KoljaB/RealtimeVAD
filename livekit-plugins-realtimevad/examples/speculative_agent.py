@@ -22,7 +22,7 @@ async def entrypoint(ctx: JobContext) -> None:
         vad=vad,
         # Any non-streaming STT (LiveKit would put it behind its StreamAdapter and call it at
         # END_OF_SPEECH), or a streaming one with capabilities.manual_flush.
-        stt=realtimevad.SpeculativeSTT(stt=openai.STT(model="whisper-1"), vad=vad, pause=0.1),
+        stt=realtimevad.SpeculativeSTT(stt=openai.STT(model="whisper-1"), vad=vad),
         llm=inference.LLM("openai/gpt-4.1-mini"),
         tts=inference.TTS("cartesia/sonic-3"),
         turn_handling={

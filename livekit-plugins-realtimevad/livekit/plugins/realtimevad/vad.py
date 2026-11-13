@@ -41,6 +41,7 @@ from livekit.agents.types import NOT_GIVEN, NotGivenOr
 from livekit.agents.utils import is_given
 
 from RealtimeVAD import VAD as _Core
+from RealtimeVAD import vad as _core_module
 from RealtimeVAD.silero import FRAME, SAMPLE_RATE
 
 from .log import logger
@@ -88,6 +89,7 @@ class VAD(agents_vad.VAD):
         activation_threshold: float = 0.9,
         deactivation_threshold: float = 0.45,
         early_end: bool = False,
+        pause_mode: str = "accurate",
         **core_options: Any,
     ) -> "VAD":
         """
@@ -100,6 +102,13 @@ class VAD(agents_vad.VAD):
                 ``raw_accumulated_silence`` (the pause). True: the segment also ends after
                 ``min_silence_duration`` of quiet audio, about 100 ms sooner and more often
                 inside a sentence.
+            pause_mode: RealtimeVAD's ``pause_mode``, how early the pause comes against how often
+                it is inside the last word. "accurate" (default): sound after a pause lets the
+                next quiet stretch report a new one. "balanced", "fast": audio counts as quiet
+                3 dB / 6 dB sooner, and one pause per stretch of speech. It moves the pause
+                (``raw_accumulated_silence``, the ``pause`` event), never START_OF_SPEECH or
+                the default END_OF_SPEECH. Fixed for the life of the VAD: not in
+                ``update_options``.
             prefix_padding_duration: audio before the speech kept in the event frames.
             max_buffered_speech: longest speech kept in END_OF_SPEECH frames (the newest is kept).
             activation_threshold: Silero probability that starts speech (RealtimeVAD's 0.9, not
@@ -108,6 +117,12 @@ class VAD(agents_vad.VAD):
             core_options: any other ``RealtimeVAD.VAD`` argument, e.g. ``soft_start_s=None``,
                 ``floor_margin_db``, ``normalize_to_dbfs``.
         """
+        modes = getattr(_core_module, "PAUSE_MODES", None)
+        if modes is None:
+            raise RuntimeError("livekit-plugins-realtimevad needs realtimevad 0.1.0 or newer (pause_mode)")
+        if pause_mode not in modes:
+            raise ValueError(f"pause_mode must be one of {', '.join(modes)}, not {pause_mode!r}")
+        core_options = {"pause_mode": pause_mode, **core_options}
         return cls(_Options(min_speech_duration, min_silence_duration, prefix_padding_duration,
                             max_buffered_speech, activation_threshold, deactivation_threshold, early_end,
                             dict(core_options)))

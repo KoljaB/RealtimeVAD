@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "livekit-plugins-realtimevad"
 dynamic = ["version"]
-description = "RealtimeVAD as a VAD plugin for LiveKit Agents (community plugin, not made by LiveKit)"
+description = "Start a LiveKit Agents reply at the user's pause: RealtimeVAD as a VAD plugin and a speculative STT wrapper (community plugin, not made by LiveKit)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -22,8 +22,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Typing :: Typed",
 ]
-dependencies = ["livekit-agents>=1.8", "realtimevad>=0.0.5", "numpy>=1.26"]
+dependencies = ["livekit-agents>=1.8", "realtimevad>=0.1.0", "numpy>=1.26"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-asyncio>=0.23", "livekit-plugins-silero>=1.8"]
@@ -31,6 +32,7 @@ dev = ["pytest>=7", "pytest-asyncio>=0.23", "livekit-plugins-silero>=1.8"]
 [project.urls]
 Homepage = "https://github.com/KoljaB/RealtimeVAD"
 Documentation = "https://github.com/KoljaB/RealtimeVAD/tree/main/livekit-plugins-realtimevad"
+Source = "https://github.com/KoljaB/RealtimeVAD/tree/main/livekit-plugins-realtimevad"
 Issues = "https://github.com/KoljaB/RealtimeVAD/issues"
 
 [tool.hatch.version]
