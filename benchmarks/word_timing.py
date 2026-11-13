@@ -39,8 +39,9 @@ of the last word actually falls to the room level.
     python benchmarks/word_timing.py --clip ID       # one clip, event by event
     python benchmarks/word_timing.py --limit 3 --options '{"speech_margin_db": 8}'   # other settings, every 3rd clip
 
-Rows go to benchmarks/word_timing_rows.json (git-ignored). About 10 h of audio; a few
-minutes with 16 worker processes.
+Rows go to benchmarks/word_timing_rows.json (git-ignored). About 10 h of audio: 2 minutes
+with --processes 16, an estimated 5 with the default 6. The workers run at below-normal
+priority so that a shared machine stays usable.
 """
 
 from __future__ import annotations
@@ -73,7 +74,24 @@ NAMES = {"libri_clean": "LibriSpeech clean", "libri_other": "LibriSpeech other",
          "ami_far": "AMI distant mic, alone"}
 
 
+def low_priority() -> None:
+    """Below-normal priority for this process: the benchmark must not starve a desktop."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            kernel = ctypes.windll.kernel32
+            kernel.GetCurrentProcess.restype = ctypes.c_void_p
+            kernel.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            kernel.SetPriorityClass(kernel.GetCurrentProcess(), 0x4000)  # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            os.nice(10)
+    except Exception:  # priority is a courtesy, never a reason to fail
+        pass
+
+
 def _options(options: dict) -> None:
+    low_priority()
     OPTIONS.update(options)  # in every worker process
 
 
@@ -860,7 +878,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--report", action="store_true", help="only print the tables from the saved rows")
     ap.add_argument("--clip", help="show one clip event by event (id, or condition/id)")
-    ap.add_argument("--processes", type=int, default=min(16, os.cpu_count() or 4))
+    ap.add_argument("--processes", type=int, default=min(6, os.cpu_count() or 4), help="worker processes (default 6)")
     ap.add_argument("--limit", type=int, default=0, help="every n-th clip only")
     ap.add_argument("--rows", default=str(ROWS))
     ap.add_argument("--options", default="{}", help='VAD arguments for the rvad detector as JSON, e.g. {"end_s": 0.3}')
@@ -881,6 +899,7 @@ def main() -> int:
         if a.limit:
             clips = clips[:: a.limit]
         t0 = time.time()
+        low_priority()
         with Pool(a.processes, initializer=_options, initargs=(json.loads(a.options),)) as pool:
             rows = pool.map(measure, clips, chunksize=8)
         Path(a.rows).write_text(json.dumps(rows) + "\n", encoding="utf-8")

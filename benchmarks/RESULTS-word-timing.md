@@ -6,7 +6,7 @@ library is measured as it is (0.0.5, defaults); nothing in it was changed.
 
 ```bash
 python tests/audio/fetch_word_timing.py        # 5.7 GB of downloads, checked by sha256; cuts 7,080 clips
-python benchmarks/word_timing.py --examples 5  # about 2 minutes with 16 processes
+python benchmarks/word_timing.py --examples 5  # 6 low-priority processes by default; 2 minutes with --processes 16
 python benchmarks/word_timing.py --clip libri_clean/7021-85628-0003_1   # one clip, event by event
 ```
 
