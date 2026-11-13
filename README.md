@@ -110,6 +110,7 @@ Input is 16 kHz mono audio as float32, int16 or int16 bytes.
 | `onset` | Speech may have begun | At the first confident frame, before `start` confirms it. Off by default: `VAD(onset_events=True)` |
 
 - **Audio:** `vad.audio()` returns the running segment at any time, starting about 0.3 s before the speech.
+- **Streaming speech recognition:** `start` comes about 64 ms after the speech began, so audio sent only from `start` on has lost the first sound. At `start`, send `vad.audio()` first (it holds the beginning and the 0.3 s before it), then every later chunk.
 - **`end`** carries the finished segment with its audio, start time, end time and the time the speech stopped.
 - **Assistant talking:** pass `vad.feed(chunk, playback=True)` for chunks recorded while your assistant speaks, so its own voice is handled as possible echo.
 - **Guarantees:** [SPEC.md](SPEC.md) lists what is guaranteed and every setting.
