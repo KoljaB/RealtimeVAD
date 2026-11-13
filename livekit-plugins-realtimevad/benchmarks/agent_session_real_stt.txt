@@ -1,0 +1,45 @@
+benchmarks/agent_session_real_stt.py, config endpoint0.05, one repetition, 2026-11-13, alone under the machine lock.
+Load: CPU load before: 1 %; finished in 349 s, exit code 0; CPU load during the run (this run included): average 4 %, peak 33 %; CPU load after: 2 %
+One repetition only: the remaining repetitions and configs were dropped when the work moved to the pause.
+
+AgentSession with a real local STT, livekit-agents 1.8.11, turn_detection='vad', interruption mode 'vad' min_duration 0.5 s, preemptive generation on (default), fake LLM and TTS (TTS: first audio 0.1 s after its text). 1 repetitions (2026-11-13 02:03:52).
+Times in ms after the true end of speech: median over all runs (each repetition's median). n-N: N runs had no such event. Counts: one number per repetition.
+'RealtimeVAD sooner' rows: the same clip in the same repetition, other VAD minus RealtimeVAD: median (each repetition's median) and the 10th..90th percentile of all pairs.
+Runs: 54 used, 6 set aside and repeated (audio pump late). Audio pump at most 43 ms late.
+
+== A. streaming STT, own endpoint 0.05 s after its last token (sherpa-onnx zipformer); 8 sentences (en-US); min_delay 0.5 s, LLM first token 0.1 s
+                                                         silero default (0.55 s)                     silero 0.25 s      realtimevad default (0.25 s)
+VAD END_OF_SPEECH                                                      708 (708)                     383 (383) n-1                     352 (352) n-1
+final transcript (the last one)                                    938 (938) n-1                     939 (939) n-1                     937 (937) n-1
+reply's LLM call starts                                          1416 (1416) n-1                   1437 (1437) n-1                   1416 (1416) n-1
+turn committed (with the last words)                                 1412 (1412)                       1433 (1433)                   1414 (1414) n-1
+first agent audio after it                                           1739 (1739)                       1739 (1739)                   1742 (1742) n-1
+first turn committed after the end                                     708 (708)                         637 (637)                     590 (590) n-1
+sentences that became 2+ turns                                                 5                                 5                                 7
+final transcripts                                                            105                               105                               105
+recognize() requests                                                           0                                 0                                 0
+LLM calls                                                                     37                                37                                49
+VAD START/END out of order                                                     0                                 0                                 0
+RealtimeVAD sooner, LLM call: than Silero default +0 (+0) p10..p90 -63..+54  |  than Silero 0.25 s +19 (+19) p10..p90 -97..+22
+RealtimeVAD sooner, turn committed: than Silero default +0 (+0) p10..p90 -63..+54  |  than Silero 0.25 s +21 (+21) p10..p90 -97..+22
+RealtimeVAD sooner, first agent audio: than Silero default +0 (+0) p10..p90 -64..+58  |  than Silero 0.25 s +0 (+0) p10..p90 -80..+17
+
+== A. streaming STT, own endpoint 0.05 s after its last token (sherpa-onnx zipformer); 10 sentences (en-US); min_delay 0.3 s, LLM first token 0.1 s
+                                                         silero default (0.55 s)                     silero 0.25 s      realtimevad default (0.25 s)
+VAD END_OF_SPEECH                                                      696 (696)                     376 (376) n-1                     335 (335) n-1
+final transcript (the last one)                                    945 (945) n-1                     934 (934) n-1                     943 (943) n-1
+reply's LLM call starts                                          1233 (1233) n-1                   1233 (1233) n-1                   1233 (1233) n-1
+turn committed (with the last words)                                 1192 (1192)                       1191 (1191)                       1191 (1191)
+first agent audio after it                                           1493 (1493)                       1485 (1485)                       1522 (1522)
+first turn committed after the end                                     696 (696)                         418 (418)                         368 (368)
+sentences that became 2+ turns                                                 6                                 9                                10
+final transcripts                                                            131                               131                               131
+recognize() requests                                                           0                                 0                                 0
+LLM calls                                                                     46                                72                                79
+VAD START/END out of order                                                     0                                 0                                 0
+RealtimeVAD sooner, LLM call: than Silero default +0 (+0) p10..p90 -59..+352  |  than Silero 0.25 s +0 (+0) p10..p90 +0..+87
+RealtimeVAD sooner, turn committed: than Silero default +0 (+0) p10..p90 -138..+295  |  than Silero 0.25 s +0 (+0) p10..p90 -1..+27
+RealtimeVAD sooner, first agent audio: than Silero default +0 (+0) p10..p90 -430..+57  |  than Silero 0.25 s +0 (+0) p10..p90 -190..+30
+
+== warnings/errors logged during the runs (stt, vad, run, count, message)
+(none)

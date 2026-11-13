@@ -11,7 +11,9 @@ Paths are relative to `livekit-agents/livekit/agents/`.
 work from a VAD's pause itself. It starts a reply early from a transcript, and an STT may deliver
 that transcript whenever it likes. An STT adapter that asks for the transcript at the pause is a
 supported construction (it is LiveKit's own `StreamAdapter` with the request moved forward) and
-is in this plugin as `realtimevad.SpeculativeSTT`. Measured numbers are in the README.
+is in this plugin as `realtimevad.SpeculativeSTT`. Measured (README, "Reply from the pause"): first
+agent audio about 420 ms sooner with the adapter on the Silero plugin's own raw silence, and 27 to
+140 ms more with RealtimeVAD's pause, which also fires more often inside a sentence.
 
 ## What a VAD plugin can say at all
 

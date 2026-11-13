@@ -56,8 +56,9 @@ LiveKit has three event types and no "pause".
 | `pause` | (none) | Runs into `raw_accumulated_silence` and stops `raw_accumulated_speech`. Also `vad.on("pause", callback)` |
 | `onset` | (none) | `vad.on("onset", callback)` |
 
-`pause` cannot start LiveKit's preemptive generation: that is triggered by
-transcripts (a final or preflight transcript from the STT), not by the VAD.
+LiveKit starts nothing from a VAD's pause itself. Its preemptive generation is
+triggered by transcripts, so the pause is put to use on the STT side: see the
+next section.
 
 `flush()` is a hard boundary, as LiveKit asks: the running speech is dropped
 without an `END_OF_SPEECH`, time starts again, and what the VAD learned about
@@ -110,6 +111,85 @@ noise level from the audio and does not take Silero's recovery state from it,
 so echo of the agent's voice that gets past the echo canceller cannot shift
 either. Speech is detected as before: the user can still interrupt. Without the
 call the plugin relies on echo cancellation alone, like the Silero plugin.
+
+## Reply from the pause: `SpeculativeSTT`
+
+LiveKit begins a reply early ("preemptive generation") as soon as it has a
+final or preflight transcript. `SpeculativeSTT` wraps your STT and asks for the
+transcript at the pause, not at `END_OF_SPEECH`:
+
+```python
+vad = realtimevad.VAD.load(min_silence_duration=0.55)
+session = AgentSession(
+    vad=vad,
+    stt=realtimevad.SpeculativeSTT(stt=your_stt, vad=vad, pause=0.1),
+    ...
+)
+```
+
+- A **non-streaming STT** (LiveKit would call it once at `END_OF_SPEECH`) gets
+  the segment so far after `pause` seconds of raw silence. The text goes out as
+  a preflight transcript, and again as the final at `END_OF_SPEECH` without a
+  second request.
+- A **streaming STT with `capabilities.manual_flush`** is flushed at the pause.
+  One without `manual_flush` cannot be finalized from outside: `ValueError`.
+- When speech goes on after the pause, that transcript is dropped. The reply
+  LiveKit began from it is never spoken.
+
+It uses public LiveKit API only and works with any VAD plugin, the Silero
+plugin included. [PAUSE.md](PAUSE.md) goes through LiveKit's source: what reads
+VAD events, why this is the one route from a pause to an earlier reply, and
+what a wrong pause costs. A full agent: [examples/speculative_agent.py](examples/speculative_agent.py).
+
+### Measured
+
+A real `AgentSession` (`turn_detection="vad"`, `min_delay` 0.5 s), a real STT
+running locally, fake LLM and TTS, audio at real-time pace. All four columns
+wait 0.55 s of silence for `END_OF_SPEECH`; RealtimeVAD's end was set to
+Silero's count, so only the pause differs. Median ms after the true end of
+speech, 3 repetitions (they agree within 30 ms):
+
+| First agent audio | Silero | Silero + `SpeculativeSTT` | RealtimeVAD | RealtimeVAD + `SpeculativeSTT` |
+|---|---|---|---|---|
+| faster-whisper base, 16 sentences in 8 languages, LLM first token 0.5 s | 2110 | 1695 | 2091 | 1581 |
+| streaming sherpa-onnx, 10 English sentences, LLM first token 0.5 s | 1424 | 1029 | 1397 | 964 |
+| the same, LLM first token 0.1 s | 1038 | 801 | 995 | 768 |
+| **Cost** over all sentences: STT requests, Whisper | 17 | 38 | 17 | 63 |
+| … STT flushes / LLM calls, sherpa-onnx | 10 / 10 | 34 / 22 | 11 / 11 | 47 / 29 |
+
+Read it like this:
+
+- **The wrapper is most of the gain, and it does not need RealtimeVAD.** With
+  the Silero plugin's own raw silence as the pause the agent's audio comes
+  about 420 ms sooner (240 ms with the fast LLM).
+- **RealtimeVAD's earlier pause adds to that:** 140 ms with Whisper (10th to
+  90th percentile of the sentences: 41 to 195), 59 ms (20 to 227) with the
+  streaming recognizer, 27 ms (0 to 54) with the fast LLM.
+- **It pays for it with more speculative work:** 63 against 38 Whisper requests
+  for 16 sentences, 47 against 34 flushes and 29 against 22 LLM calls for 10.
+  Its pause fires more often inside a sentence (probably at short gaps that
+  Silero's probability bridges; not examined further).
+- With a fast LLM the turn commit becomes the limit: the reply is ready before
+  `END_OF_SPEECH`, and LiveKit does not speak before it. A shorter
+  `min_silence_duration` is what moves that.
+- Without the wrapper the early pause does nothing in LiveKit. The 20 to 40 ms
+  in the "RealtimeVAD" column are its `END_OF_SPEECH`, which came about 30 ms
+  before the Silero plugin's although both count 0.55 s of Silero silence.
+- Not tested: the Silero plugin with a `pause` below 0.1 s, which would close
+  some of the gap at the price of more wrong pauses.
+- One English sentence became two turns in both RealtimeVAD columns with the
+  streaming recognizer and in neither Silero column; with Whisper one sentence
+  did in all four. Of the 48 Whisper runs per column, 2 or 3 had no transcript.
+
+Preemptive generation ran with `max_retries` 10 and `max_speech_duration` 30 s
+in all columns; LiveKit's defaults (3 and 10 s) switch it off in a long turn
+with several pauses. Full output with the machine's load during each run:
+[benchmarks/speculative_check.txt](benchmarks/speculative_check.txt).
+
+```bash
+python benchmarks/speculative_check.py r1.json 1 sherpa     # models: see benchmarks/local_stt.py
+python benchmarks/speculative_check.py report r*.json
+```
 
 ## Measured against the Silero plugin
 
@@ -195,6 +275,14 @@ python benchmarks/agent_session_check.py out.json   # also needs a checkout of l
 
 One speaker per clip, no echo, no real room, a fake STT that answers 50 ms
 after the speech: these are timings of the VAD's part, not call quality.
+
+With a real STT the earlier `END_OF_SPEECH` can be worth nothing. One run with
+a streaming recognizer that finalizes on its own endpoint, about 940 ms after
+the speech (10 English sentences): the turn was committed when that transcript
+came, and the median gain was 0 ms against the Silero plugin's default and 0 to
+21 ms against Silero at 0.25 s
+([benchmarks/agent_session_real_stt.txt](benchmarks/agent_session_real_stt.txt)).
+The earlier end pays off only when the transcript is there before it.
 
 ```bash
 python benchmarks/compare_silero.py out.json     # needs the repository's test audio, see the main README
