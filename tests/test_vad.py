@@ -235,7 +235,7 @@ def test_quiet_is_judged_against_room_noise():
     assert ev[-1].segment.speech_end == pytest.approx(t_pause, abs=0.011)
     # room noise raised the threshold, so the quiet clock waits noisy_extra_s (0.04) longer
     assert ev[-1].time == pytest.approx(ev[-1].segment.speech_end + 0.28)
-    fixed = run(segs, noise_margin_db=-200.0)  # no adaptation: quiet stays at quiet_rms
+    fixed = run(segs, noise_margin_db=-200.0, noise_subtract_db=None)  # no adaptation: quiet stays at quiet_rms
     assert kinds(fixed) == ["start", "pause"]  # never quiet, Silero never drops: no end
 
 
@@ -248,6 +248,58 @@ def test_soft_speech_is_never_quiet():
 
 
 QUIET = [(2, 0.95, 0.004), (30, 0.9, 0.004)]  # a quiet speaker at -48 dBFS (a phone line), ~1 s
+
+
+def noisy_scene(tail_db=None, snr_db=14.0):
+    """1.3 s of white room noise, 1 s of a 1 kHz "voice" at -40 dBFS in it, then the noise alone
+    (or with the voice going on tail_db softer) while Silero lags 12 frames behind."""
+    frames = [40, 30, 40]
+    rng = np.random.default_rng(0)
+    noise = rng.standard_normal(sum(frames) * FRAME).astype(np.float32) * 10 ** ((-40 - snr_db) / 20)
+    voice = 0.01 * math.sqrt(2) * np.sin(2 * np.pi * 1000 * np.arange(len(noise)) / 16000)
+    gain = np.zeros(len(noise))
+    gain[frames[0] * FRAME : 70 * FRAME] = 1.0
+    if tail_db is not None:
+        gain[70 * FRAME :] = 10 ** (tail_db / 20)
+    probs = [0.1] * 40 + [0.95] * 30 + [0.6] * 12 + [0.1] * 28
+    return probs, noise + (voice * gain).astype(np.float32), 70 * F
+
+
+def test_steady_noise_close_under_the_speaker_still_gets_an_early_end():
+    # Noise 14 dB below the speaker never falls under the quiet threshold (20 dB below them, or
+    # 15 dB below their latest level). What is left after subtracting the room's spectrum does.
+    probs, audio, off = noisy_scene()
+    ev = VAD(probability=scripted(probs)).feed(audio)
+    assert kinds(ev) == ["start", "pause", "end"] and ev[1].source == "quiet"
+    assert off < ev[1].time <= off + 0.03  # speech-off within 30 ms; Silero's first silent frame: 0.384 s
+    assert ev[2].time == pytest.approx(ev[1].time + 0.28)  # the noisy wait
+    silero = VAD(probability=scripted(probs), noise_subtract_db=None).feed(audio)
+    assert [(e.kind, e.source) for e in silero] == [("start", ""), ("pause", "silero"), ("end", "")]
+    assert silero[2].time == pytest.approx(off + 20 * F)  # 12 frames of lag + 8 of silence
+
+
+def test_soft_speech_in_that_noise_is_not_silence():
+    # The voice goes on 18 dB softer, below the noise and unheard by Silero: it stands out of
+    # the room's spectrum, so the quiet count never completes (a single block may look quiet and
+    # give a pause) and Silero's count ends the segment.
+    for tail_db in (-12.0, -18.0):
+        probs, audio, off = noisy_scene(tail_db=tail_db)
+        ev = VAD(probability=scripted(probs)).feed(audio)
+        assert [e.kind for e in ev if e.kind != "pause"] == ["start", "end"]
+        assert ev[-1].time == pytest.approx(off + 20 * F)
+
+
+def test_noise_subtraction_leaves_clean_input_alone_and_gives_no_end_in_loud_noise():
+    # Noise far below the floor: the level decides, exactly as without the subtraction.
+    probs, audio, _ = noisy_scene(snr_db=40.0)
+    with_it = VAD(probability=scripted(probs)).feed(audio)
+    without = VAD(probability=scripted(probs), noise_subtract_db=None).feed(audio)
+    assert [(e.kind, e.time, e.source) for e in with_it] == [(e.kind, e.time, e.source) for e in without]
+    # Noise 4 dB under the speaker leaves too much behind: Silero's count ends the segment.
+    probs, audio, off = noisy_scene(snr_db=4.0)
+    ev = VAD(probability=scripted(probs)).feed(audio)
+    assert [e.kind for e in ev if e.kind != "pause"] == ["start", "end"]
+    assert ev[-1].time == pytest.approx(off + 20 * F)
 
 
 def test_soft_ending_of_a_quiet_speaker_is_not_silence():

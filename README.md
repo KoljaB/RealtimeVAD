@@ -187,10 +187,11 @@ What this says, and what it doesn't:
 - **Quiet speakers are no longer cut.** Ends while the speaker talks and lost
   speech are now where Silero alone has them. In all of these runs RealtimeVAD's
   last end was never later than Silero's.
-- **A noisy quiet line has no lead.** When the noise is less than about 20 dB
-  below the speaker (the room-noise row, and the quiet phone line with its
-  line noise), nothing can be called quiet without calling soft speech quiet.
-  RealtimeVAD then ends where Silero does: correct, and no faster.
+- **A noisy quiet line had no lead in 0.0.5.** When the noise is less than
+  about 20 dB below the speaker (the room-noise row, and the quiet phone line
+  with its line noise), no level can be called quiet without calling soft
+  speech quiet. 0.0.5 then ends where Silero does: correct, and no faster.
+  The next section is about that.
 - **Very quiet and narrowband speech is a Silero limit.** At −62 dBFS, and on
   the phone line, Silero itself is unsure. Speech it never scores 0.9 used to
   start no segment at all (476 of the phone-line turns, 1,264 at −62 dBFS).
@@ -205,6 +206,40 @@ What this says, and what it doesn't:
 - The phone path is simulated, and the reference for "still talking" is the
   original wideband recording. One speaker, one microphone.
 
+### Steady noise close under the speaker (after 0.0.5)
+
+Where steady noise is too close under the speaker for a level threshold,
+RealtimeVAD now subtracts the room's spectrum (learned from the frames Silero
+does not call speech) from each 10 ms block's and asks whether what is left
+is below the quiet floor. A soft word ending stands out of the noise in a few
+bands and stays; the noise alone leaves next to nothing. It is used only where
+the noise is within 3 dB of the quiet floor or above it, so clean input is
+decided by the level exactly as before. The same 3,401 turns, before (0.0.5
+plus the DC fix) and after:
+
+| Speech level | Speech-off lead | earlier than Silero in | `end` earlier than Silero alone in | Ended while talking: before / after / Silero alone | Lost ≥ 100 ms: before / after / Silero alone |
+|---|---|---|---|---|---|
+| −47 dBFS in room noise at −62 dBFS | 0 → 90 ms | 25 → 77 % | 12 % | 124 / 123 / 304 | 106 / 105 / 106 |
+| phone line, −38 dBFS | 112 → 116 ms | 88 → 92 % | 80 % | 416 / 416 / 392 | 231 / 231 / 227 |
+| phone line, −48 dBFS | 0 → 118 ms | 39 → 89 % | 65 % (median 36 ms) | 263 / 255 / 275 | 301 / 301 / 294 |
+| phone line, −58 dBFS | 0 → 100 ms | 29 → 79 % | 25 % | 271 / 263 / 312 | 912 / 912 / 910 |
+
+The clean rows of the table above did not move (at most 9 of 3,401 turns per
+row end differently), and no end was later than Silero's. What it does not
+do:
+
+- The lead is in the speech-off (`pause`). In room noise the `end` itself is
+  still mostly Silero's: single noise blocks keep breaking the 0.28 s count.
+- Borderline endings rose with it: on the −48 dBFS phone line, ends with
+  speech of the original recording inside the wait went from 486 to 750 turns,
+  and Silero was confident again within 0.3 s after an end in 247 turns
+  instead of 82. Ends followed by more speech and lost speech did not rise.
+- It needs noise that is steady and at least about 11 dB under the speaker.
+  Babble, music and street noise are not subtracted away; nothing changes
+  there.
+- The room noise and the phone line are simulated (pink noise, white line
+  noise). It costs about 1 ms of CPU per second of audio.
+
 What to set:
 
 | If … | then |
@@ -213,6 +248,7 @@ What to set:
 | you would rather keep the old fixed floor | `VAD(floor_margin_db=None)` |
 | soft starts open segments you don't want (background voices) | `VAD(soft_start_s=None)` |
 | you want Silero's own count only, no early end | `VAD(quiet_rms=0)` |
+| you want the level threshold only, as in 0.0.5 | `VAD(noise_subtract_db=None)` |
 | your input is quiet or a phone line, and clean | try `VAD(normalize_to_dbfs=-30)`, see below |
 
 ```bash
@@ -262,7 +298,9 @@ question and not answered here.
 - The lead needs audio that actually goes quiet after a word, and noise
   suppression helps that. In the 137 noisier turns (room level above −70 dBFS)
   the median lead was 102–124 ms. Without noise suppression in a loud room,
-  expect less; with noise within about 20 dB of the speaker, none.
+  expect less; with steady noise within about 20 dB of the speaker the
+  speech-off still leads, the `end` mostly does not (see above), and within
+  about 11 dB there is no lead.
 - Earlier is not the same as correct: at the recorded level, whether a
   speech-off sometimes lands inside a soft word ending was not checked against
   word timings. The quiet-input table above checks it against the same audio

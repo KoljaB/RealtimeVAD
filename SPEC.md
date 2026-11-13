@@ -29,9 +29,14 @@ actually goes quiet.
   - "Quiet" is also judged against the speaker: it is at least 20 dB below
     their own level (the median of the running segment's speech), also when
     that is below the fixed quiet level. A quiet speaker's soft word endings
-    therefore don't end the segment, at any input level. Where room noise is
-    less than that far below the speaker, nothing counts as quiet: the early
-    end is lost there and the speech model alone ends the segment.
+    therefore don't end the segment, at any input level.
+  - Where steady room or line noise is less than that far below the speaker,
+    no level can count as quiet. There the audio also counts as quiet when
+    what is left of it after subtracting the room's spectrum is below that
+    same level. Speech that stands out of the noise in any part of the
+    spectrum is not quiet. Noise that is not steady, or less than about 11 dB
+    below the speaker, leaves too much: the early end is lost there and the
+    speech model alone ends the segment. Clean input is not affected.
   - "Quiet", the room's noise level and the speaker's level are measured
     without a constant (DC) offset in the input: an offset neither hides the
     silence nor counts as sound, and the timing is the same with and without

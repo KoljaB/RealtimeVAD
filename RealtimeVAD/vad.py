@@ -25,6 +25,25 @@ _DC_R = math.exp(-2.0 * math.pi * 20.0 / SAMPLE_RATE)
 _DC_GAIN = 0.5 * (1.0 + _DC_R)  # unity gain at the top of the band
 _DC_POW = _DC_R ** np.arange(FRAME, dtype=np.float64)
 _DC_INV = 1.0 / _DC_POW
+# Steady noise close under the speaker (a noisy phone line, a raw microphone in a room) never
+# falls below the quiet threshold. There a 10 ms block also counts as quiet when what is left
+# of its spectrum after subtracting the room's is below the quiet floor: 20 ms Hann windows,
+# 16 mel-spaced bands from 100 Hz to 8 kHz.
+_NS_WIN = 2 * BLOCK
+_NS_HZ = 700.0 * (10.0 ** (np.linspace(np.log10(1 + 100 / 700), np.log10(1 + 8000 / 700), 17)) - 1.0)
+
+
+def _ns_bands(n: int) -> tuple:
+    """(Hann window, first bin of each band, scale that makes band powers add up to the mean square)."""
+    hann = np.hanning(n + 1)[:-1]
+    return hann, np.searchsorted(np.fft.rfftfreq(n, 1 / SAMPLE_RATE), _NS_HZ[:-1]), 2.0 / (n * float(np.sum(hann * hann)))
+
+
+_NS_BLOCK, _NS_FRAME = _ns_bands(_NS_WIN), _ns_bands(FRAME)  # a block is judged on 20 ms, the room is learned per frame
+NS_RISE_DB = 3.0 * FRAME_S  # the room's spectrum falls at once and rises 3 dB/s, like the idle floor: soft speech
+# Silero is unsure about barely lifts it, and a word's tail is forgotten in the next frame
+NS_NEAR_DB = 3.0  # used only where the room is at most this far below the quiet floor (the level alone is blind there)
+NS_MIN_SNR_DB = 6.0  # ...and at least this far below the speaker
 
 
 @dataclass(frozen=True)
@@ -93,6 +112,7 @@ class VAD:
         noise_margin_db: float = 15.0,
         speech_margin_db: float = 15.0,
         floor_margin_db: Optional[float] = 20.0,  # quiet input: quiet_rms drops to this far below the speaker; None = fixed
+        noise_subtract_db: Optional[float] = 4.0,  # steady noise near the speaker: subtract the room's spectrum, this far over-estimated; None = off
         preroll_s: float = 0.30,
         lookback_s: float = 1.0,
         restore_s: float = 1.0,  # Silero recovery after this much p < 0.1 over real (non-zero) audio; 0 = off
@@ -146,6 +166,13 @@ class VAD:
         # distance to their level instead, or those endings would count as silence and end the
         # segment. Measured on real turns: 19 dB still cuts some, 20.5 and 22 dB are equally safe.
         self.floor_margin_db = floor_margin_db
+        # Where steady noise is less than about 20 dB below the speaker, the level never drops
+        # under the quiet floor and the quiet clock would never run. A block is then also quiet
+        # when its spectrum, minus the room's spectrum over-estimated by noise_subtract_db, has
+        # less left than the quiet floor. Speech 20 dB below the speaker that stands out of the
+        # noise in any band keeps its energy; what the noise fully covers Silero does not hear
+        # either. The room's spectrum is tracked from below, so 4 dB is about 2 dB over its mean.
+        self.noise_subtract_db = noise_subtract_db
         self.start_s = start_s
         self._end_frames = max(1, _frames(end_s))
         self._max_frames = max(1, _frames(max_speech_s))
@@ -166,6 +193,13 @@ class VAD:
         self._dc_x: Optional[float] = None  # high-pass state: last input sample...
         self._dc_y = 0.0  # ...and last output sample
         self._frame_buf = np.zeros(0, dtype=np.float32)
+        self._ns_parts: deque = deque()  # the latest 20 ms or a little more, as fed
+        self._ns_len = 0
+        self._ns_noise_db: Optional[np.ndarray] = None  # the room's band powers, dB
+        self._ns_noise = np.zeros(0)  # ...as over-estimated powers...
+        self._ns_total_db = -100.0  # ...and their plain sum
+        self._ns_quiet = False  # the latest block was quiet after subtraction
+        self._floor_db = -100.0  # quiet floor, dBFS
         self._echo_until = -math.inf
         self._history: deque = deque(maxlen=self._preroll_n + self._lookback_n)  # (frame, dBFS, echo)
         self._floor: Optional[float] = None  # idle floor for the onset look-back
@@ -197,6 +231,10 @@ class VAD:
     def start_s(self, seconds: float) -> None:
         self._start_s = seconds
         self._start_frames = max(1, _frames(seconds))
+
+    @property
+    def _ns_on(self) -> bool:
+        return self.noise_subtract_db is not None and self.quiet_rms > 0
 
     @property
     def in_speech(self) -> bool:
@@ -239,11 +277,19 @@ class VAD:
             self._block_n += step
             self._frame_buf = np.concatenate((self._frame_buf, part))
             energy = self._energy(part)
+            if self._ns_on:
+                parts = self._ns_parts
+                parts.append(part)
+                self._ns_len += step
+                while self._ns_len - len(parts[0]) >= _NS_WIN:
+                    self._ns_len -= len(parts.popleft())
             self._block_energy += energy
             self._frame_energy += energy
             if playback:
                 self._echo_until = self._n / SAMPLE_RATE + 0.5
             block = self._block_n == BLOCK
+            if block:
+                self._ns_quiet = self._in_speech and self._ns_on and self._subtracted_quiet()
             quiet = block and self._block_start(self._block_energy / BLOCK)
             if len(self._frame_buf) == FRAME:
                 frame, self._frame_buf = self._frame_buf, np.zeros(0, dtype=np.float32)
@@ -269,9 +315,38 @@ class VAD:
         self._dc_y = float(y[-1]) if abs(y[-1]) > 1e-30 else 0.0
         return float(np.dot(y, y))
 
+    @staticmethod
+    def _bands(x: np.ndarray, layout: tuple) -> np.ndarray:
+        hann, edges, scale = layout
+        spectrum = np.fft.rfft(x * hann)
+        return np.add.reduceat(spectrum.real ** 2 + spectrum.imag ** 2, edges) * scale
+
+    def _subtracted_quiet(self) -> bool:
+        """Is what the latest 20 ms leave above the room's spectrum below the quiet floor?"""
+        # only where the room is close under the floor (else the level decides, as it always
+        # did) and clearly under the speaker (else it cannot be told from them)
+        if (self._ns_noise_db is None or self._level_db is None
+                or not self._floor_db - NS_NEAR_DB <= self._ns_total_db <= self._level_db - NS_MIN_SNR_DB):
+            return False
+        x = np.concatenate(self._ns_parts)[-_NS_WIN:]
+        if len(x) < _NS_WIN:
+            return False
+        left = float(np.sum(np.maximum(0.0, self._bands(x, _NS_BLOCK) - self._ns_noise)))
+        return left <= 10.0 ** (self._floor_db / 10.0)
+
+    def _learn_spectrum(self, frame: np.ndarray) -> None:
+        """The room's spectrum follows the frames that are not speech."""
+        seen = 10.0 * np.log10(self._bands(frame, _NS_FRAME) + 1e-12)
+        n = self._ns_noise_db
+        self._ns_noise_db = n = seen if n is None else np.minimum(seen, n + NS_RISE_DB)
+        self._ns_noise = 10.0 ** ((n + self.noise_subtract_db) / 10.0)
+        self._ns_total_db = 10.0 * math.log10(float(np.sum(10.0 ** (n / 10.0))) + 1e-12)
+
     # -- per 10 ms block (quiet clock) -------------------------------------
     def _block_start(self, power: float) -> bool:
         quiet = math.sqrt(power) <= self._quiet
+        self._by_subtraction = not quiet and self._ns_quiet
+        quiet = quiet or self._ns_quiet
         if self._t_quiet is not None:
             if quiet:
                 self._loud = 0
@@ -292,7 +367,7 @@ class VAD:
             # armed, or counting anew after a click or a breath broke the count (speech that
             # Silero heard resume keeps it off until real sound re-arms it)
             self._t_quiet, self._unbroken, self._loud, self._quiet_blocks = t, True, 0, 1
-            raised = self._quiet > self.quiet_rms * (1 + 1e-6)
+            raised = self._quiet > self.quiet_rms * (1 + 1e-6) or self._by_subtraction
             self._quiet_wait = self.quiet_end_s + (self.noisy_extra_s if raised else 0.0)
             self._pause(t, events, "quiet")
 
@@ -325,7 +400,7 @@ class VAD:
             want = self.normalize_to_dbfs - sorted(self._gain_seen)[len(self._gain_seen) // 2]
             want = max(0.0, min(self.normalize_max_db, want))
             self._gain_db += max(-2.0, min(2.0, want - self._gain_db))
-        self._levels(p, level, echo)
+        self._levels(frame, p, level, echo)
         soft = (self.soft_start_s is not None and p >= self._soft_level()
                 and (self._floor is None or level >= self._floor + SOFT_OVER_DB))
         if self._tail:  # after an early end, Silero's fading tail must not open a new segment...
@@ -362,7 +437,7 @@ class VAD:
         if self._silent >= self._end_target:
             self._finish(t, events)
 
-    def _levels(self, p: float, level: float, echo: bool) -> None:
+    def _levels(self, frame: np.ndarray, p: float, level: float, echo: bool) -> None:
         """Learn speech and room-noise levels and set the quiet threshold."""
         # A segment that began softly may never reach start_threshold: its levels are learned
         # from the frames that carry it.
@@ -372,7 +447,10 @@ class VAD:
             self._speech_db = level if s is None else s + max(-1.0, min(1.0, level - s))
             if self._in_speech:
                 self._learn_level(level)
-        elif p < self.continue_threshold and level > -90.0 and not echo:  # skip gated digital silence
+        noise = not carries and p < self.continue_threshold and not echo
+        if noise and self._ns_on:  # over gated digital silence the room's spectrum falls: nothing to subtract there
+            self._learn_spectrum(frame)
+        if noise and level > -90.0:  # the noise level skips gated digital silence
             n = self._noise_db
             if n is None:
                 self._noise_db = level
@@ -389,7 +467,7 @@ class VAD:
             floor_db = 20.0 * math.log10(self.quiet_rms)
             if self._level_db is not None and self.floor_margin_db is not None:
                 floor_db = min(floor_db, self._level_db - self.floor_margin_db)
-            db = floor_db
+            self._floor_db = db = floor_db
             if self._noise_db is not None:
                 db = max(db, self._noise_db + self.noise_margin_db)
             if self._speech_db is not None:
@@ -544,3 +622,4 @@ class VAD:
         self._loud = 0
         self._quiet_blocks = 0
         self._quiet_wait = self.quiet_end_s
+        self._by_subtraction = False
