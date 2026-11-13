@@ -1,6 +1,6 @@
 # RealtimeVAD
 
-*An early "the speaker stopped" signal for voice assistants: 90 ms before Silero by default, 130 ms in fast mode, on a close microphone. None on a distant one.*
+*An early "the speaker stopped" signal for voice assistants: 92 ms before Silero by default, 130 ms in fast mode, on a close microphone. None on a distant one.*
 
 [RealtimeSTT](https://github.com/KoljaB/RealtimeSTT) · [RealtimeTTS](https://github.com/KoljaB/RealtimeTTS) · [Live demo](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) · [Results](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md) · [Quiet and noisy input](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md) · [Spec](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md) · [LiveKit plugin](https://github.com/KoljaB/RealtimeVAD/blob/main/livekit-plugins-realtimevad/README.md)
 
@@ -16,7 +16,7 @@ speaker's own level. The moment the audio goes quiet you get a `pause` event,
 before Silero's probability has fallen. You start the answer on `pause` and
 cancel it if the speaker goes on.
 
-- **Earlier:** `pause` comes a median 92 ms before Silero's probability drops, and 238 ms before Silero's `VADIterator` reports the end (3,118 real voice-assistant turns, one speaker).
+- **Earlier:** `pause` comes a median 92 ms before Silero's probability drops, and 238 ms before Silero's `VADIterator` reports the end (3,153 real voice-assistant turns, one speaker).
 - **Or faster:** `pause_mode="fast"` leads by 130 ms on the same turns and more often fires inside the last word ([your choice](#earlier-or-more-accurate-pause_mode)).
 - **Other speakers:** 82 to 90 ms on 6,600 close-microphone clips from 214 speakers, without noise suppression.
 - **Quiet, noisy and phone input:** 84 to 122 ms on quiet speech, steady room noise and a phone line (simulated from the same turns).
@@ -48,12 +48,15 @@ settings:
 
 | Input | Median lead | Earlier than Silero in |
 |---|---|---|
-| Close microphone with noise suppression, one speaker | 90 ms | 90 % of turns |
-| Read speech, raw microphone (LibriSpeech) | 80 – 84 ms | 83 % |
-| Meeting headset, speaker alone (AMI) | 88 ms | 79 % |
-| Meeting headset, others talking (AMI) | 84 ms | 67 % |
+| Close microphone with noise suppression, one speaker | 92 ms | 92 % of turns |
+| Read speech, raw microphone (LibriSpeech) | 82 – 84 ms | 84 – 85 % |
+| Meeting headset, speaker alone (AMI) | 90 ms | 80 % |
+| Meeting headset, others talking (AMI) | 86 ms | 69 % |
 | Quiet speaker, clean, −38 to −52 dBFS | 100 – 122 ms | 91 – 95 % |
 | Steady room noise 15 dB under the speaker (simulated) | 84 ms | 75 % |
+
+The last two rows are from the run before the trailing-silence rule; with it
+they can only get longer, not shorter.
 | Phone line, −38 to −58 dBFS (simulated) | 92 – 114 ms | 79 – 87 % |
 | **Distant table microphone (AMI)** | **0 ms** | 30 % |
 | **Steady noise within about 11 dB of the speaker** | **none** | – |
@@ -140,7 +143,7 @@ vad = VAD(pause_mode="fast")   # "accurate" (default), "balanced" or "fast"
 | `"fast"` | 118 – 126 ms (130 ms) | 18 – 24 % | 4 – 10 % | 2.0 – 2.2 |
 
 The ranges cover four close-microphone sets from 214 speakers; the figure in
-brackets is the 3,118 one-speaker turns.
+brackets is the 3,153 one-speaker turns.
 
 - **What `"fast"` costs:** in one of five turns the last `pause` comes more than 100 ms before the last word is over. Audio cut at that `pause` misses the end of the word.
 - **When to use it:** when what you start at `pause` copes with a missing word ending, or is redone at `end`.
@@ -152,16 +155,16 @@ Details and the full table: [results.md](https://github.com/KoljaB/RealtimeVAD/b
 
 | Measured on | Result |
 |---|---|
-| 3,118 turns, one speaker: `pause` before Silero's probability falls below 0.5 | median 90 ms (p25 – p75: 72 – 112 ms), earlier in 90 % |
-| Same turns: `pause` before Silero's `VADIterator` end | median 238 ms, earlier in 96 % |
-| Same turns: `pause` followed by more speech | 1.9 per second of speech (Silero: 0.15) |
-| 6,600 close-microphone clips, 214 speakers: last `pause` more than 100 ms before the word ends | 1 – 2 % of read sentences, 6 – 8 % of meeting clips |
+| 3,153 turns, one speaker: `pause` before Silero's probability falls below 0.5 | median 92 ms (p25 – p75: 72 – 112 ms), earlier in 92 % |
+| Same turns: `pause` before Silero's `VADIterator` end | median 238 ms, earlier in 99 % |
+| Same turns: `pause` followed by more speech | 1.8 per second of speech (Silero: 0.16) |
+| 6,600 close-microphone clips, 214 speakers: last `pause` more than 100 ms before the word ends | 1 – 2 % of read sentences, 6 – 9 % of meeting clips |
 | All 7,080 clips and all quiet, noisy and phone rows: `end` | same as Silero alone, never later |
 | CPU, one thread, Silero included | 8.3 ms per second of audio |
 
 ### Why the headline number changed
 
-This page said 110 ms at first, then 100 ms, now 90 ms. The detector did not
+This page said 110 ms at first, then 100 ms, now 92 ms. The detector did not
 get slower: each release moved the default toward fewer mistakes, and the
 earlier behaviour is still there as a setting.
 
@@ -169,12 +172,13 @@ earlier behaviour is still there as a setting.
 |---|---|---|
 | 0.0.4 | 110 ms | One `pause` per stretch of speech, fixed quiet floor. Cut quiet speakers: 11 % of turns ended while talking at −38 dBFS |
 | 0.0.5 | 100 ms | The quiet floor follows the speaker, soft speech starts a segment. Quiet speakers are no longer cut |
-| now, default | 90 ms | A `pause` inside the last word is followed by a better one. Last `pause` too early in 2.2 % of read sentences, was 7.6 % |
-| now, `repause_s=None` | 102 ms | One `pause` per stretch of speech, as in 0.0.5 |
+| now, default | 92 ms | A `pause` inside the last word is followed by a better one, and sound in the trailing silence does not repeat it. Last `pause` too early in 2.2 % of read sentences, was 7.6 % |
+| now, `repause_s=None` | 102 ms * | One `pause` per stretch of speech, as in 0.0.5 |
 | now, `pause_mode="fast"` | 130 ms | Earlier than any release so far, at the price in the table above |
 
 - **The first `pause` of a turn comes as early as before.** The number fell because the benchmark measures the last one, which is now the later, better one.
-- **Not the same turns each time.** The set grew and was filtered differently (3,238, 3,279 and 3,118 turns), so the step from 110 to 100 ms is not attributed to one change; the step from 100 to 90 ms is, see [results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md#speech-off-pause).
+- **Not the same turns each time.** The set grew and was filtered differently (3,238, 3,279, 3,118 and now 3,153 turns), so the step from 110 to 100 ms is not attributed to one change; the step from 100 to 92 ms is, see [results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md#speech-off-pause).
+- \* The `repause_s=None` figure was measured before the trailing-silence rule and without it; every other row in this section is from the current default.
 
 - **Everything else:** [docs/results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md) has the full tables, the comparison with 0.0.5 and the `early_end` option.
 - **Quiet, noisy, phone:** [docs/quiet-and-noisy-input.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md) has every level and line we measured, backchannels and DC offset.

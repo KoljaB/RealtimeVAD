@@ -10,7 +10,7 @@ input has its own page: [quiet-and-noisy-input.md](quiet-and-noisy-input.md).
 
 ## Speech-off (`pause`)
 
-One speaker: 3,118 turns from a live voice assistant (browser capture with
+One speaker: 3,153 turns from a live voice assistant (browser capture with
 noise suppression), each with its trailing silence, default settings. Silero's
 decisions are computed from the very same frame probabilities, so both see
 identical input. "Speech-off" is RealtimeVAD's last `pause` before the turn
@@ -18,18 +18,19 @@ ended, against the first frame of Silero's final run below its threshold.
 
 | RealtimeVAD speech-off earlier than … | median | p25 – p75 | earlier in |
 |---|---|---|---|
-| Silero, probability below 0.5 (its default threshold) | 90 ms | 72 – 112 ms | 90 % |
-| Silero, probability below 0.35 (`VADIterator`'s end threshold) | 102 ms | 82 – 122 ms | 92 % |
-| Silero `VADIterator` end, default 100 ms minimum silence | 238 ms | 214 – 294 ms | 96 % |
+| Silero, probability below 0.5 (its default threshold) | 92 ms | 72 – 112 ms | 92 % |
+| Silero, probability below 0.35 (`VADIterator`'s end threshold) | 104 ms | 84 – 126 ms | 93 % |
+| Silero `VADIterator` end, default 100 ms minimum silence | 238 ms | 214 – 294 ms | 99 % |
 
 | Speech-off signals followed by more speech | per second of speech | turns without any |
 |---|---|---|
-| RealtimeVAD `pause` | 1.9 | 16 % |
-| Silero, probability below 0.5 | 0.15 | 84 % |
+| RealtimeVAD `pause` | 1.8 | 16 % |
+| Silero, probability below 0.5 | 0.16 | 84 % |
 
 These turns come from one capture chain: browser capture with noise
 suppression and echo cancellation, mostly quiet rooms. In the 137 noisier
-turns among them (room level above −70 dBFS) the median lead was 102–124 ms.
+turns among them (room level above −70 dBFS) the median lead was 102–124 ms;
+that sub-analysis is from the 3,118-turn run before the trailing-silence rule.
 
 Many speakers, raw microphones: 7,080 clips from 214 speakers with word
 timings (LibriSpeech read speech, AMI meeting headsets; no noise suppression),
@@ -93,7 +94,7 @@ trailing-silence rule it was 2.8 to 9.1 %.
 The three `pause_mode` settings, and the one `pause` per stretch of 0.0.5 at
 today's thresholds (`repause_s=None`), on the same clips and turns:
 
-| | LibriSpeech clean | LibriSpeech other | AMI headset, alone | AMI headset, others talking | one speaker, 3,118 turns |
+| | LibriSpeech clean | LibriSpeech other | AMI headset, alone | AMI headset, others talking | one speaker, 3,153 turns |
 |---|---|---|---|---|---|
 | **Median lead over Silero** | | | | | |
 | `"accurate"` | 84 ms | 82 ms | 90 ms | 86 ms | 92 ms |
@@ -122,7 +123,8 @@ today's thresholds (`repause_s=None`), on the same clips and turns:
 | `"fast"` | 2.23 | 2.02 | 2.05 | 2.12 | 1.70 |
 
 \* The `repause_s=None` row is 0.0.5's behaviour at today's thresholds, measured
-before the trailing-silence rule and without it.
+before the trailing-silence rule and without it, on the 3,118-turn set. The
+quiet, noisy and phone-line figures further down are from that run too.
 
 - The one-speaker turns have no word timings, so "too early" cannot be
   counted there.
