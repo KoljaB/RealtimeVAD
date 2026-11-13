@@ -220,12 +220,10 @@ trade as a shorter silence setting. It is now the option
 | LibriSpeech clean | 60 % | 26 ms | 0 – 54 ms | 0 | 35.9 % | 33.1 % |
 | LibriSpeech other | 62 % | 30 ms | 0 – 66 ms | 0 | 33.3 % | 31.0 % |
 | AMI headset, speaker alone | 64 % | 48 ms | 0 – 92 ms | 0 | 38.1 % | 35.8 % |
-| AMI headset, others talking | 52 % | 16 ms | 0 – 88 ms | 1 clip | 33.2 % | 30.9 % |
+| AMI headset, others talking | 52 % | 16 ms | 0 – 88 ms | 0 | 33.2 % | 30.9 % |
 
-The one later `end` (32 ms): with the early end, Silero's recovery from a
-long pause came on other frames than without it in 7 of 7,080 clips, so its
-probabilities differed there. With the default `end` they are identical in
-all clips. The clips are whole sentences cut at 0.24 s, so a third of them contain a
+Silero's probabilities are the same with and without the quiet clock in all
+7,080 clips, with the default `end` and with the early end. The clips are whole sentences cut at 0.24 s, so a third of them contain a
 pause that long for any detector; the early end adds 2 to 3 points to that.
 The one-speaker turns have no word timings; there the early end left speech
 of the recording inside its 0.24 s wait in 49 of 3,401 turns.

@@ -748,3 +748,21 @@ def test_resume_when_silero_hears_speech_again_and_only_once_per_pause():
     assert kinds(ev).count("resume") <= kinds(ev).count("pause")
     for a, b in zip(kinds(ev), kinds(ev)[1:]):
         assert (a, b) != ("resume", "resume")
+
+
+def test_restore_reads_nothing_the_early_end_changes():
+    # A room 10 dB under the speaker, a word, digital silence, then noise 8 dB under the speaker
+    # that Silero scores 0. After the early end the idle frames up to Silero's own end used to
+    # pull the idle floor down to the silence; the noise then counted as "loud like the speaker"
+    # and Silero was restored after 0.19 s, without the early end only after a second. Seen on
+    # 7 of 7,080 meeting clips: other probabilities, and one end later than Silero alone.
+    segs = [(10, 0.0, 0.03)] + SPEECH + [(4, 0.6, 0.0), (8, 0.1, 0.0), (50, 0.0, 0.04)]
+
+    def restored_at(**kw):
+        m = Restorable([p for n, p, _ in segs for _ in range(n)])
+        vad = VAD(probability=m, early_end=True, end_s=0.24, quiet_end_s=0.24, **kw)
+        for i, frame in enumerate(np.concatenate([level(n * FRAME, a) for n, _, a in segs]).reshape(-1, FRAME)):
+            vad.feed(frame)
+            if m.restores:
+                return i
+    assert restored_at() == restored_at(quiet_rms=0) is not None

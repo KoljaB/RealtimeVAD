@@ -236,6 +236,8 @@ class VAD:
         self._gain_db = 0.0  # normalize_to_dbfs: gain on Silero's input, moving 2 dB per frame...
         self._gain_seen: deque = deque(maxlen=16)  # ...toward the median level of the last half second of speech
         self._shadow: Optional[int] = None  # Silero's silent frames after an early end, until it would end too
+        self._shadow_soft = False  # ...and whether that segment began softly
+        self._shadowed = False
         self._soft_segment = False  # the running segment began that way
         self._quiet = self.quiet_rms if self.quiet_rms > 0 else -1.0  # current quiet threshold (RMS)
         self._tail = False  # waiting for Silero to drop after an early end
@@ -482,7 +484,11 @@ class VAD:
         """Learn speech and room-noise levels and set the quiet threshold."""
         # A segment that began softly may never reach start_threshold: its levels are learned
         # from the frames that carry it.
-        carries = p >= (self._soft_level() if self._in_speech and self._soft_segment else self.start_threshold)
+        # (After an early end, until Silero's own count would have ended the segment, everything
+        # the recovery below reads is kept as it would be without the early end.)
+        shadow = self._shadow is not None
+        soft_segment = self._shadow_soft if shadow else self._in_speech and self._soft_segment
+        carries = p >= (self._soft_level() if soft_segment else self.start_threshold)
         if carries:
             s = self._speech_db
             self._speech_db = level if s is None else s + max(-1.0, min(1.0, level - s))
@@ -542,6 +548,7 @@ class VAD:
         # ended the segment too, this counts as speech here, so a restore comes exactly when it
         # would without the quiet clock and the probabilities that follow are the same.
         in_speech = self._in_speech or self._shadow is not None
+        self._shadowed = in_speech and not self._in_speech  # this frame: idle here, in speech for Silero alone
         if self._shadow is not None and not self._in_speech:
             self._shadow = 0 if p >= self.continue_threshold else self._shadow + 1
             if self._shadow >= self._end_frames:
@@ -580,7 +587,7 @@ class VAD:
 
     def _idle_frame(self, p: float, voiced: bool, soft: bool, level: float, t: float, events: list[Event]) -> None:
         floor = self._floor
-        if self._lookback_n:
+        if self._lookback_n and not self._shadowed:  # the idle floor is learned where Silero alone is idle too
             if floor is None or level <= floor:
                 self._floor = level if floor is None else floor + (level - floor) * 0.5
             else:
@@ -670,6 +677,8 @@ class VAD:
         )
         self._in_speech = False
         self._tail = early  # ended by the quiet clock, Silero may still be high
+        if early and self._shadow is None:
+            self._shadow_soft = self._soft_segment  # the segment Silero alone is still in
         self._shadow = self._silent if early else None  # Silero's count, carried on
         self._idle = self._streak = self._soft = 0
         self._clear_segment()
