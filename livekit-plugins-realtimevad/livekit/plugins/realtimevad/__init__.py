@@ -3,10 +3,11 @@
 from livekit.agents import Plugin
 
 from .log import logger
+from .stt import SpeculativeSTT
 from .vad import VAD, VADStream
 from .version import __version__
 
-__all__ = ["VAD", "VADStream", "__version__"]
+__all__ = ["VAD", "VADStream", "SpeculativeSTT", "__version__"]
 
 
 class RealtimeVADPlugin(Plugin):

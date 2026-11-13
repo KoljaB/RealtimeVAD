@@ -43,13 +43,14 @@ import contextlib
 import ctypes
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get("REALTIMEVAD_ROOT") or Path(__file__).resolve().parents[2])  # a git worktree has no audio
 sys.path.insert(0, str(ROOT / "tests" / "audio"))
 sys.path.insert(0, str(ROOT / ".livekit-src" / "agents"))  # LiveKit's tests/ as package "tests"
 
@@ -71,7 +72,7 @@ LANGS = ("cmn-Hans-CN", "de-DE", "en-US", "fr-FR", "hi-IN", "ru-RU")
 VADS = {
     "silero default (0.55 s)": lambda: silero.VAD.load(),
     "silero 0.25 s": lambda: silero.VAD.load(min_silence_duration=0.25),
-    "realtimevad default (0.25 s)": lambda: realtimevad.VAD.load(),
+    "realtimevad early end (0.25 s)": lambda: realtimevad.VAD.load(min_silence_duration=0.25, early_end=True),
 }
 LONG_REPLY = "Let me tell you a long story about the history of saddles and stirrups in Europe."
 SHORT_REPLY = "Okay."

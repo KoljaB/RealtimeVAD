@@ -1,0 +1,77 @@
+benchmarks/speculative_check.py, 2026-11-13, Windows 10, AMD Ryzen 9 3900X, livekit-agents 1.8.11, realtimevad 0.0.5.
+Nine jobs, each alone under the machine lock (.team/run_exclusive.py --kind timing). Its load lines per job:
+  r1_sherpa: CPU load before: 1 %; finished in 353 s, exit code 0; CPU load during the run (this run included): average 6 %, peak 40 %; CPU load after: 2 %
+  r1_whisper_en: CPU load before: 1 %; finished in 564 s, exit code 0; CPU load during the run (this run included): average 2 %, peak 29 %; CPU load after: 1 %
+  r1_whisper_cm: CPU load before: 0 %; finished in 585 s, exit code 0; CPU load during the run (this run included): average 5 %, peak 29 %; CPU load after: 9 %
+  r2_sherpa: CPU load before: 0 %; finished in 353 s, exit code 0; CPU load during the run (this run included): average 2 %, peak 21 %; CPU load after: 3 %
+  r2_whisper_en: CPU load before: 0 %; finished in 564 s, exit code 0; CPU load during the run (this run included): average 4 %, peak 57 %; CPU load after: 1 %
+  r2_whisper_cm: CPU load before: 0 %; finished in 586 s, exit code 0; CPU load during the run (this run included): average 4 %, peak 28 %; CPU load after: 1 %
+  r3_sherpa: CPU load before: 0 %; finished in 352 s, exit code 0; CPU load during the run (this run included): average 2 %, peak 5 %; CPU load after: 3 %
+  r3_whisper_en: CPU load before: 0 %; finished in 564 s, exit code 0; CPU load during the run (this run included): average 3 %, peak 65 %; CPU load after: 1 %
+  r3_whisper_cm: CPU load before: 0 %; finished in 586 s, exit code 0; CPU load during the run (this run included): average 3 %, peak 29 %; CPU load after: 1 %
+
+SpeculativeSTT in an AgentSession, livekit-agents 1.8.11, turn_detection='vad', min_delay 0.5 s, 0.55 s of silence to END_OF_SPEECH in every arm, preemptive generation {'max_retries': 10, 'max_speech_duration': 30.0}, fake LLM and TTS (TTS: first audio 0.1 s after its text). 3 repetitions.
+Times in ms after the true end of speech: median over all runs (each repetition's median). n-N: N runs had no such event. Counts: one number per repetition.
+'sooner than silero' rows: the same clip in the same repetition, silero minus that arm: median (each repetition's median) and the 10th..90th percentile of all pairs.
+Runs: 431 used, 1 not used (audio pump more than 60 ms late). Audio pump at most 52 ms late in the used runs.
+
+== faster-whisper base (not streaming); 16 sentences (en-US, de-DE, es-419, fr-FR, cmn-Hans-CN, ja-JP, hi-IN, ru-RU); LLM first token after 0.5 s
+                                                                    silero            silero+speculative                   realtimevad       realtimevad+speculative
+VAD END_OF_SPEECH                                        692 (691 694 691)             692 (692 692 692)             666 (668 666 667)             667 (668 666 668)
+recognizer's last result                         1417 (1412 1417 1423) n-3            999 (991 999 1003)     1386 (1382 1357 1405) n-3             883 (881 875 888)
+final transcript reaches LiveKit                 1417 (1412 1417 1424) n-3      1004 (993 1003 1005) n-3     1386 (1383 1358 1405) n-3         885 (904 875 890) n-2
+LLM call whose reply is spoken starts            1427 (1428 1427 1426) n-3      1004 (994 1004 1005) n-3     1397 (1395 1377 1424) n-3         885 (904 876 891) n-2
+turn committed                                   1427 (1428 1427 1426) n-3      1004 (994 1004 1005) n-3     1397 (1395 1376 1423) n-3         885 (905 876 891) n-2
+first agent audio                                2110 (2112 2115 2109) n-3     1695 (1689 1702 1704) n-3     2091 (2085 2077 2108) n-3     1581 (1589 1570 1585) n-2
+STT requests / flushes                                            17 16 17                      38 36 38                      17 16 17                      63 61 65
+LLM calls                                                         17 16 17                      17 16 17                      17 16 17                      17 16 18
+sentences that became 2+ turns                                       1 1 1                         1 1 1                         1 1 1                         1 1 1
+LLM call, silero+speculative sooner than silero: +421 (+423 +421 +412) p10..p90 +386..+457
+LLM call, realtimevad sooner than silero: +36 (+38 +57 +27) p10..p90 -7..+78
+LLM call, realtimevad+speculative sooner than silero: +548 (+532 +551 +549) p10..p90 +445..+641
+first agent audio, silero+speculative sooner than silero: +420 (+420 +400 +420) p10..p90 +380..+461
+first agent audio, realtimevad sooner than silero: +20 (+20 +40 +21) p10..p90 -19..+81
+first agent audio, realtimevad+speculative sooner than silero: +540 (+518 +540 +580) p10..p90 +459..+641
+first agent audio, realtimevad+speculative sooner than silero+speculative: +140 (+99 +160 +140) p10..p90 +41..+195
+recognize() took median 0.70 s [0.57..5.82]
+
+== sherpa-onnx streaming zipformer with manual_flush; 10 sentences (en-US); LLM first token after 0.5 s
+                                                                    silero            silero+speculative                   realtimevad       realtimevad+speculative
+VAD END_OF_SPEECH                                        700 (704 696 700)             699 (705 695 700)             667 (669 670 661)             667 (669 673 659)
+recognizer's last result                                 739 (749 732 736)             319 (320 315 325)             708 (721 707 705)             260 (254 263 255)
+final transcript reaches LiveKit                         739 (749 732 736)         327 (327 320 331) n-3             708 (723 707 706)         265 (276 267 263) n-6
+LLM call whose reply is spoken starts                    742 (751 735 738)             321 (325 318 326)             711 (725 711 708)             263 (259 265 256)
+turn committed                                           741 (751 734 738)             700 (706 696 701)             711 (725 710 708)             667 (669 673 661)
+first agent audio                                    1424 (1450 1423 1418)         1029 (1030 1040 1020)         1397 (1426 1397 1386)             964 (965 967 958)
+STT requests / flushes                                            10 10 10                      34 34 34                      11 11 11                      47 47 47
+LLM calls                                                         10 10 10                      22 22 22                      11 11 11                      29 29 29
+sentences that became 2+ turns                                       0 0 0                         0 0 0                         1 1 1                         1 1 1
+LLM call, silero+speculative sooner than silero: +422 (+424 +419 +424) p10..p90 +387..+497
+LLM call, realtimevad sooner than silero: +28 (+27 +24 +38) p10..p90 -5..+51
+LLM call, realtimevad+speculative sooner than silero: +480 (+496 +467 +490) p10..p90 +453..+987
+first agent audio, silero+speculative sooner than silero: +420 (+422 +419 +429) p10..p90 +378..+490
+first agent audio, realtimevad sooner than silero: +23 (+35 +0 +40) p10..p90 +0..+62
+first agent audio, realtimevad+speculative sooner than silero: +481 (+508 +460 +488) p10..p90 +439..+666
+first agent audio, realtimevad+speculative sooner than silero+speculative: +59 (+69 +50 +67) p10..p90 +20..+227
+
+== sherpa-onnx streaming zipformer with manual_flush; 10 sentences (en-US); LLM first token after 0.1 s
+                                                                    silero            silero+speculative                   realtimevad       realtimevad+speculative
+VAD END_OF_SPEECH                                        701 (699 701 702)             701 (698 701 702)             668 (665 670 667)             670 (666 672 667)
+recognizer's last result                                 749 (731 750 749)             316 (323 314 310)             704 (698 706 704)             254 (254 246 259)
+final transcript reaches LiveKit                         750 (732 750 750)         327 (327 328 313) n-3             704 (698 707 704)         261 (263 256 263) n-6
+LLM call whose reply is spoken starts                    752 (735 753 752)             319 (325 316 313)             706 (701 709 706)             257 (257 248 260)
+turn committed                                           752 (734 752 752)             702 (699 702 702)             706 (701 708 706)             671 (667 672 667)
+first agent audio                                    1038 (1037 1051 1037)             801 (797 799 807)            995 (987 1013 992)             768 (765 770 764)
+STT requests / flushes                                            10 10 10                      34 34 34                      11 11 11                      47 47 47
+LLM calls                                                         10 10 10                      22 22 22                      11 11 11                      30 29 29
+sentences that became 2+ turns                                       0 0 0                         0 0 0                         1 1 1                         1 1 1
+LLM call, silero+speculative sooner than silero: +425 (+424 +422 +428) p10..p90 +388..+509
+LLM call, realtimevad sooner than silero: +42 (+33 +43 +42) p10..p90 -4..+61
+LLM call, realtimevad+speculative sooner than silero: +492 (+489 +493 +492) p10..p90 +461..+993
+first agent audio, silero+speculative sooner than silero: +238 (+238 +246 +236) p10..p90 +213..+259
+first agent audio, realtimevad sooner than silero: +37 (+35 +34 +37) p10..p90 +0..+62
+first agent audio, realtimevad+speculative sooner than silero: +269 (+276 +262 +266) p10..p90 +236..+301
+first agent audio, realtimevad+speculative sooner than silero+speculative: +27 (+29 +27 +33) p10..p90 +0..+54
+
+== warnings/errors logged during the runs (stt, arm, count, message)
+(none)

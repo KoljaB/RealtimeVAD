@@ -1,0 +1,52 @@
+Core: realtimevad 0.0.5.
+SpeculativeSTT's requests, replayed over 24 sentences (10 English, 2 each in 7 more languages), speech 165 s. Both VADs with 0.55 s to END_OF_SPEECH.
+requests: per sentence. last: the pause whose transcript becomes the reply, median ms of audio time after the true end of speech. missed: sentences without such a pause.
+
+silero: END_OF_SPEECH median 684 ms after the end of speech, 26 segments in 24 sentences
+  ja_02_f (speech 2.16..12.95 s), relative to its end: start -10.74, end -7.60, start -7.22, end -2.71, start -2.23, end +0.68
+   pause  min_new_speech  requests    last  missed
+    0.05             0.0      2.33     204       0
+    0.05             0.3      2.21     204       2
+    0.05             0.6      2.17     204       2
+    0.05             1.0      2.04     204       4
+     0.1             0.0      2.29     268       0
+     0.1             0.3      2.21     268       1
+     0.1             0.6      2.17     268       1
+     0.1             1.0      2.04     268       3
+    0.15             0.0      2.21     300       0
+    0.15             0.3      2.12     300       1
+    0.15             0.6      2.08     300       1
+    0.15             1.0      1.96     300       3
+     0.2             0.0      2.00     364       0
+     0.2             0.3      1.96     364       1
+     0.2             0.6      1.96     364       1
+     0.2             1.0      1.88     364       3
+     0.3             0.0      1.58     460       0
+     0.3             0.3      1.54     460       1
+     0.3             0.6      1.54     460       1
+     0.3             1.0      1.50     460       2
+
+realtimevad: END_OF_SPEECH median 684 ms after the end of speech, 27 segments in 24 sentences
+  ja_01_m (speech 2.36..7.60 s), relative to its end: start -5.17, end +1.23, start +2.25, end +2.92
+  ja_02_f (speech 2.16..12.95 s), relative to its end: start -10.74, end -7.60, start -7.16, end -2.71, start -2.23, end +0.68
+   pause  min_new_speech  requests    last  missed
+    0.05             0.0      6.62      92       0
+    0.05             0.3      5.04     140       8
+    0.05             0.6      3.96     140      11
+    0.05             1.0      2.83     156      12
+     0.1             0.0      3.83     140       0
+     0.1             0.3      3.29     140       2
+     0.1             0.6      2.92     188       6
+     0.1             1.0      2.25     204       7
+    0.15             0.0      2.67     220       0
+    0.15             0.3      2.46     204       3
+    0.15             0.6      2.38     220       4
+    0.15             1.0      1.96     236       6
+     0.2             0.0      2.29     284       0
+     0.2             0.3      2.21     268       2
+     0.2             0.6      2.17     268       3
+     0.2             1.0      1.83     284       4
+     0.3             0.0      1.92     380       0
+     0.3             0.3      1.88     364       1
+     0.3             0.6      1.88     364       1
+     0.3             1.0      1.62     364       1

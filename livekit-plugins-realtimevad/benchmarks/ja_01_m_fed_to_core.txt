@@ -1,0 +1,23 @@
+ja_01_m_fed_to_core.wav: the exact 16 kHz int16 samples the LiveKit plugin passed to RealtimeVAD.VAD.feed
+for the clip ja_01_m (levelled to -30 dBFS, 0.5 s lead, 4.5 s tail, white noise at -65 dBFS), as built by
+benchmarks/pause_requests.py. Identical to the harness audio: the plugin changes nothing at 16 kHz.
+Labelled speech 2.356..7.604 s.
+
+Fed directly to RealtimeVAD.VAD 0.0.5, outside LiveKit, in chunks of 512 or 160 samples:
+  VAD(end_s=0.55)   start 1.376, end 8.8, start 8.832, end 10.496     <- a second segment in the tail
+  VAD()             start 1.376, end 8.48
+The second segment needs nothing of the plugin: end_s=0.55 alone gives it. Through the plugin it shows as
+START_OF_SPEECH 9.856, END_OF_SPEECH 10.528. Silero's probability in the tail has a spike of 0.7..0.9 about
+every 0.26 s (8 frames) after 9.0 s.
+
+ja_01_m_fed_to_core_other_noise.wav: the same clip with another draw of the white noise (rng state), as
+benchmarks/speculative_check.py builds it for ja-JP alone. One segment there: start 1.376, end 8.8.
+
+    import wave, numpy as np
+    from RealtimeVAD import VAD
+    w = wave.open("ja_01_m_fed_to_core.wav"); x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    v = VAD(end_s=0.55)
+    print([(e.kind, round(e.time, 3)) for i in range(0, len(x), 512) for e in v.feed(x[i:i + 512]) if e.kind in ("start", "end")])
+
+The .wav files are git-ignored in this repository: they are on disk in this worktree only,
+D:/Projekte/RealtimeVAD/.claude/worktrees/livekit-real-stt/livekit-plugins-realtimevad/benchmarks/.
