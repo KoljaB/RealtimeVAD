@@ -72,7 +72,7 @@ def measure(evs, on, off):
     m["reply_llm"] = real.rel(calls[-1] if calls else None, off)  # the call whose reply was spoken
     hyp = [e["t"] for e in evs if e["kind"] in ("stt_request", "stt_flush", "stt_endpoint") and e["value"]]
     m["transcript_ready"] = real.rel(hyp[-1] if hyp else None, off)  # the recognizer's last result
-    m["stt_work"] = sum(e["kind"] in ("stt_request", "stt_flush") for e in evs)
+    m["stt_work"] = sum(e["kind"] in ("stt_request_start", "stt_flush") for e in evs)  # started, also if cancelled
     return m
 
 
@@ -118,6 +118,8 @@ def report(paths):
     parts = [json.load(open(p, encoding="utf-8")) for p in paths]
     labels = sorted({p["rep"] for p in parts})
     runs = [dict(r, rep=p["rep"]) for p in parts for r in p["runs"]]
+    for r in runs:  # every request that was started, also one that was cancelled later
+        r["measure"]["stt_work"] = sum(e["kind"] in ("stt_request_start", "stt_flush") for e in base.fed(r["events"]))
     used = [r for r in runs if r["valid"]]
     out = [f"SpeculativeSTT in an AgentSession, livekit-agents 1.8.11, turn_detection='vad', min_delay 0.5 s, "
            f"{SILENCE} s of silence to END_OF_SPEECH in every arm, preemptive generation {PREEMPTIVE}, fake LLM and "

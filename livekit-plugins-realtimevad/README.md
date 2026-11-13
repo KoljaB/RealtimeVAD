@@ -77,8 +77,9 @@ Median ms after the true end of speech, 3 repetitions (they agree within
   the Silero plugin's own raw silence as the pause, the agent's audio comes
   about 420 ms sooner (240 ms with the fast LLM).
 - **RealtimeVAD's earlier pause adds to that:** 140 ms with Whisper (10th to
-  90th percentile of the sentences: 41 to 195), 59 ms (20 to 227) with the
-  streaming recognizer, 27 ms (0 to 54) with the fast LLM.
+  90th percentile of the sentences: 41 to 195) and 59 ms (20 to 227) with the
+  streaming recognizer. With the fast LLM it adds nothing: the 27 ms in the
+  table were an earlier `END_OF_SPEECH`, see below.
 - **It pays with more speculative work:** 63 against 38 Whisper requests for 16
   sentences, 47 against 34 flushes and 29 against 22 LLM calls for 10.
 - With a fast LLM the turn commit becomes the limit: the reply is ready before
@@ -89,12 +90,30 @@ Median ms after the true end of speech, 3 repetitions (they agree within
 In these runs RealtimeVAD's `END_OF_SPEECH` still came about 30 ms before the
 Silero plugin's (the 20 to 40 ms in the "RealtimeVAD" column), and one English
 sentence with a 0.58 s gap became two turns with RealtimeVAD only. Both had one
-cause, fixed since: see "The VAD" below. One Hindi sentence had no reply in any
-column because the benchmark closed the session before Whisper was done
-(5.7 s for 12 s of audio); the benchmark now waits. Preemptive generation ran
-with `max_retries` 10 and `max_speech_duration` 30 s in all columns. Full
-output with the machine's load during each run:
-[benchmarks/speculative_check.txt](benchmarks/speculative_check.txt).
+cause, fixed since: see "The VAD" below. One more repetition after the fix
+([benchmarks/speculative_check_after_fixes.txt](benchmarks/speculative_check_after_fixes.txt)):
+
+| First agent audio, after the fix | Silero | Silero + `SpeculativeSTT` | RealtimeVAD | RealtimeVAD + `SpeculativeSTT` |
+|---|---|---|---|---|
+| faster-whisper base, LLM first token 0.5 s | 2121 | 1708 | 2115 | 1561 |
+| streaming sherpa-onnx, LLM first token 0.5 s | 1437 | 1005 | 1437 | 954 |
+| the same, LLM first token 0.1 s | 1055 | 795 | 1055 | 799 |
+| `END_OF_SPEECH`, Whisper / sherpa-onnx | 691 / 703 | 692 / 704 | 691 / 708 | 691 / 708 |
+| STT requests started, Whisper | 18 | 39 | 19 | 66 |
+| STT flushes / LLM calls, sherpa-onnx | 10 / 10 | 34 / 22 | 10 / 10 | 47 / 31 |
+
+The ends are level, no sentence splits in one VAD only, and the plain
+RealtimeVAD column equals the Silero column. The wrapper gains 420 to 440 ms
+(240 ms with the fast LLM); RealtimeVAD's pause adds 139 ms with Whisper (49 to
+180), 42 ms with the streaming recognizer (22 to 203) and 0 ms with the fast
+LLM.
+
+One Hindi sentence had no reply in any column of the first runs because the
+benchmark closed the session before Whisper was done; it now waits (Whisper
+base needs 6 to 13 s for that sentence, so its times stay out of the medians).
+Preemptive generation ran with `max_retries` 10 and `max_speech_duration` 30 s
+in all columns. Full output of the three repetitions with the machine's load
+during each run: [benchmarks/speculative_check.txt](benchmarks/speculative_check.txt).
 
 ```bash
 python benchmarks/speculative_check.py r1.json 1 sherpa     # models: see benchmarks/local_stt.py
@@ -260,8 +279,11 @@ pytest
   throughout). From the source, an earlier pause starts its request sooner but
   does not move the commit ([PAUSE.md](PAUSE.md)).
 - One speaker per clip, no echo, no real room.
-- The session table was measured before `END_OF_SPEECH` was aligned with the
-  Silero plugin's count and before superseded requests were cancelled.
+- The three-repetition session table was measured before `END_OF_SPEECH` was
+  aligned with the Silero plugin's count; after it there is one repetition.
+- Cancelling a superseded request stops waiting for it. Whether the work stops
+  is up to the STT: an HTTP request is dropped, a local model in a thread runs
+  to its end.
 
 ## Pipecat
 
