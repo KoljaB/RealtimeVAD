@@ -43,13 +43,14 @@ import contextlib
 import ctypes
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get("REALTIMEVAD_ROOT") or Path(__file__).resolve().parents[2])  # a git worktree has no audio
 sys.path.insert(0, str(ROOT / "tests" / "audio"))
 sys.path.insert(0, str(ROOT / ".livekit-src" / "agents"))  # LiveKit's tests/ as package "tests"
 
