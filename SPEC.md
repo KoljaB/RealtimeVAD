@@ -32,6 +32,11 @@ actually goes quiet.
     therefore don't end the segment, at any input level. Where room noise is
     less than that far below the speaker, nothing counts as quiet: the early
     end is lost there and the speech model alone ends the segment.
+  - "Quiet", the room's noise level and the speaker's level are measured
+    without a constant (DC) offset in the input: an offset neither hides the
+    silence nor counts as sound, and the timing is the same with and without
+    it. Only these level measurements are affected; the speech model and the
+    returned audio get the input as it came.
   - An optional external detector, such as semantic end-of-turn detection,
     may extend the wait. It may also shorten an extension it asked for
     earlier, but never below those base waits.

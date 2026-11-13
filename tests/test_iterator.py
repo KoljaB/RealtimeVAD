@@ -28,6 +28,7 @@ def scenario():
     audio = np.zeros(40 * 512, dtype=np.float32)
     audio[: 10 * 512] = 0.05  # room noise
     audio[10 * 512 : 20 * 512] = 0.1  # speech, then silence
+    audio[1::2] *= -1  # no DC part: a constant value is an offset, not sound
     return FakeSilero(probs), audio
 
 

@@ -76,6 +76,7 @@ if lab.available():
     GATED = [(single("gated", c, ("level", -30), ("white", -65), ("gate", -55)), c) for c in S8]
     CLIPPED = [(single("clipped", c, ("level", -10), ("gain", 25)), c) for c in S8]
     DC = [(single("dc", c, ("dc", 0.02)), c) for c in S8]
+    NO_DC = [(single("dc-none", c), c) for c in S8]  # the same clips without the offset
     CLICKS = case("clicks", [(NOISE["fan_1"]["file"], [("cut", 0, 20), ("gain", -200), ("white", -70), ("clicks", 0.7)])])
     BACKCHANNEL = [(case(f"backchannel/{c['id']}", [(c["file"], [])]), c) for c in lab.clips("backchannel")]
     TURN_START = [(case(f"turn-start/{c['id']}", [(c["file"], [])]), c) for c in lab.clips("turn_start")]
@@ -214,8 +215,8 @@ def test_muting_noise_suppression(runs, guard):
 
 
 def test_clipping_and_dc_offset(runs, guard):
-    """Speech 15 dB into clipping, and a DC offset of -34 dBFS under the speech (it hides the
-    silence from the quiet clock, so Silero's count ends the segments: slower, nothing lost)."""
+    """Speech 15 dB into clipping, and a DC offset of -34 dBFS under the speech (levels are
+    measured without it, so the quiet clock ends the segments as it does without the offset)."""
     for name, keyed in (("clipped", CLIPPED), ("DC offset", DC)):
         rows = stats(runs, keyed)
         guard(f"{name}: clips with a segment, of 8", total(rows, "detected"), ">=", 8)
@@ -223,6 +224,13 @@ def test_clipping_and_dc_offset(runs, guard):
               min(a - b for a, b in zip(values(rows, "covered"), values(rows, "covered_silero"))), ">=", -0.02)
         guard(f"{name}: ends decided while the speaker talks", total(rows, "premature"), "<=", total(rows, "premature_silero"))
         guard(f"{name}: last end later than Silero alone, worst clip", max(0.0, -min(values(rows, "end_gain"), default=0)) * 1000, "<=", 0, "ms")
+    _, results = runs
+    plain = stats(runs, NO_DC)
+    guard("DC offset: ends by the quiet clock, of those without the offset", total(rows, "quiet_ends"), ">=", total(plain, "quiet_ends"))
+    guard("DC offset: ends by the quiet clock", total(rows, "quiet_ends"), ">=", 8)
+    moved = max(abs(lab.last_end(results[a]) - lab.last_end(results[b])) for (a, _), (b, _) in zip(DC, NO_DC))
+    # Silero itself hears the offset: its probabilities, and so an end, can move by a frame
+    guard("DC offset: last end moved against the same clip without it, worst clip", moved * 1000, "<=", 33, "ms")
     guard.done()
 
 

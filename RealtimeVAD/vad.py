@@ -19,6 +19,12 @@ EPS = 1e-9
 LEVEL_S = 3.0  # the speaker's level is the median of the segment's last 3 s of speech frames...
 LEVEL_MIN_S = 0.25  # ...once it has this much; until then the previous segment's level counts
 SOFT_OVER_DB = 10.0  # a soft start must be this far above the idle floor (steady noise Silero is unsure about is not)
+# Levels (the quiet clock's blocks, the speaker's and the room's level) are measured behind a
+# one-pole 20 Hz high-pass, so a DC offset in the input is not mistaken for sound.
+_DC_R = math.exp(-2.0 * math.pi * 20.0 / SAMPLE_RATE)
+_DC_GAIN = 0.5 * (1.0 + _DC_R)  # unity gain at the top of the band
+_DC_POW = _DC_R ** np.arange(FRAME, dtype=np.float64)
+_DC_INV = 1.0 / _DC_POW
 
 
 @dataclass(frozen=True)
@@ -58,8 +64,7 @@ def _frames(seconds: float) -> int:
     return math.ceil(seconds / FRAME_S - EPS)
 
 
-def _dbfs(x: np.ndarray) -> float:
-    power = float(np.mean(x * x))
+def _dbfs(power: float) -> float:
     return max(-100.0, 10.0 * math.log10(power)) if power > 0.0 else -100.0
 
 
@@ -156,7 +161,10 @@ class VAD:
         if reset is not None:
             reset()
         self._n = 0  # samples processed
-        self._block_buf = np.zeros(0, dtype=np.float32)
+        self._block_n = 0  # samples of the running 10 ms block...
+        self._block_energy = self._frame_energy = 0.0  # ...and its and the frame's energy behind the high-pass
+        self._dc_x: Optional[float] = None  # high-pass state: last input sample...
+        self._dc_y = 0.0  # ...and last output sample
         self._frame_buf = np.zeros(0, dtype=np.float32)
         self._echo_until = -math.inf
         self._history: deque = deque(maxlen=self._preroll_n + self._lookback_n)  # (frame, dBFS, echo)
@@ -224,27 +232,46 @@ class VAD:
         i = 0
         while i < len(x):
             # advance to the next block or frame boundary, whichever is first
-            step = min(BLOCK - len(self._block_buf), FRAME - len(self._frame_buf), len(x) - i)
+            step = min(BLOCK - self._block_n, FRAME - len(self._frame_buf), len(x) - i)
             part = x[i : i + step]
             i += step
             self._n += step
-            self._block_buf = np.concatenate((self._block_buf, part))
+            self._block_n += step
             self._frame_buf = np.concatenate((self._frame_buf, part))
+            energy = self._energy(part)
+            self._block_energy += energy
+            self._frame_energy += energy
             if playback:
                 self._echo_until = self._n / SAMPLE_RATE + 0.5
-            block = self._block_buf if len(self._block_buf) == BLOCK else None
-            quiet = block is not None and self._block_start(block)
+            block = self._block_n == BLOCK
+            quiet = block and self._block_start(self._block_energy / BLOCK)
             if len(self._frame_buf) == FRAME:
                 frame, self._frame_buf = self._frame_buf, np.zeros(0, dtype=np.float32)
-                self._frame(frame, self._n / SAMPLE_RATE, events)
-            if block is not None:
-                self._block_buf = np.zeros(0, dtype=np.float32)
+                level, self._frame_energy = _dbfs(self._frame_energy / FRAME), 0.0
+                self._frame(frame, level, self._n / SAMPLE_RATE, events)
+            if block:
+                self._block_n, self._block_energy = 0, 0.0
                 self._block_end(quiet, self._n / SAMPLE_RATE, events)
         return events
 
+    def _energy(self, part: np.ndarray) -> float:
+        """Energy of up to one frame of input without its DC offset (only levels use this;
+        Silero and the segment's audio get the input as it came)."""
+        x = part.astype(np.float64)
+        if self._dc_x is None:
+            self._dc_x = float(x[0])  # an offset present from the first sample makes no transient
+        d = np.empty_like(x)
+        d[0] = x[0] - self._dc_x
+        d[1:] = x[1:] - x[:-1]
+        n = len(x)
+        y = _DC_POW[:n] * (_DC_R * self._dc_y + _DC_GAIN * np.cumsum(d * _DC_INV[:n]))
+        self._dc_x = float(x[-1])
+        self._dc_y = float(y[-1]) if abs(y[-1]) > 1e-30 else 0.0
+        return float(np.dot(y, y))
+
     # -- per 10 ms block (quiet clock) -------------------------------------
-    def _block_start(self, block: np.ndarray) -> bool:
-        quiet = math.sqrt(float(np.mean(block * block))) <= self._quiet
+    def _block_start(self, power: float) -> bool:
+        quiet = math.sqrt(power) <= self._quiet
         if self._t_quiet is not None:
             if quiet:
                 self._loud = 0
@@ -278,7 +305,7 @@ class VAD:
         return wait if extra is None else max(wait, extra)
 
     # -- per 32 ms Silero frame --------------------------------------------
-    def _frame(self, frame: np.ndarray, t: float, events: list[Event]) -> None:
+    def _frame(self, frame: np.ndarray, level: float, t: float, events: list[Event]) -> None:
         t0 = time.perf_counter()
         gain = self._gain_db
         if gain >= 0.01:  # never into clipping: a loud frame right after a soft one gets less
@@ -290,7 +317,6 @@ class VAD:
             voiced = p >= self.continue_threshold
         else:  # idle: the first frame needs start_threshold, the rest of the debounce confirm_threshold
             voiced = p >= (self.confirm_threshold if self._streak else self.start_threshold)
-        level = _dbfs(frame)
         echo = t <= self._echo_until
         self._history.append((frame, level, echo))
         if (self.normalize_to_dbfs is not None and p >= 0.5 and not echo

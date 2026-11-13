@@ -272,8 +272,15 @@ question and not answered here.
   turns) and depends on the noise.
 - Whisper is mostly not detected (Silero scores it below 0.5). Laughter,
   coughs and sneezes often are.
-- A DC offset in the input hides the silence from the quiet clock: no early
-  end then, nothing lost.
+- A DC offset in the input no longer hides the silence from the quiet clock
+  (up to 0.0.5 it did: no early end). Levels are now measured behind a 20 Hz
+  high-pass; the audio you get back and what Silero sees keep the offset. On
+  the 3,401 turns with a constant offset of −40 dBFS added, the speech-off
+  lead was 0 ms (earlier than Silero in 6 % of turns) and is now 102 ms
+  (99 %), against 100 ms (98 %) without the offset. What is left is Silero
+  itself: it is a little less sure with an offset under the speech, most of
+  all under quiet speech (at −52 dBFS it finds no speech in 254 turns instead
+  of 139). Remove a large offset before the VAD if you have one.
 - 16 kHz mono only.
 
 ## Development
