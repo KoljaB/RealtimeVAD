@@ -68,7 +68,7 @@ repeats it); that change can only make their lead equal or longer.
 
 https://github.com/user-attachments/assets/d01900dd-9601-4f3d-8c88-db55e8bc83a1
 
-The video was recorded with 0.1.0 and a synthetic voice and shows a median lead of 78 ms over its three turns.
+The video was recorded with 0.1.0 and a synthetic voice and shows a median lead of 100 ms over its three turns. Its sentences were picked to show a lead close to the one measured on real turns; that voice's typical lead is about 70 ms.
 
 [demo/](demo/README.md) runs
 this page on your own microphone. It shows, turn by turn, how much sooner

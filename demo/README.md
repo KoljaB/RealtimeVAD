@@ -59,6 +59,8 @@ is 8.
 - **The video was recorded with 0.1.0 and a synthetic voice** (Breeze TTS) and
   shows a median lead of 100 ms over its three turns (110, 100 and 88 ms). On real
   voice-assistant turns the measured median of the current version is 92 ms.
+  The video's sentences were picked to show a lead close to that; over 69
+  takes of this voice the typical lead is about 70 ms.
   Its first sentence begins with a short "Hey" and a small gap, and the turn
   starts at the "Hey".
 - **The lead depends on the voice** and on how each sentence ends.
