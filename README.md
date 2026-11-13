@@ -57,13 +57,14 @@ for chunk in microphone_chunks():
 | Event | Meaning | When |
 |---|---|---|
 | `start` | Speech has begun | After about 64 ms of confident speech, so clicks don't trigger it. Speech Silero is never confident about (a short "mm-hmm", a quiet phone voice) starts after about 0.13 s at half confidence, if it is clearly louder than the room |
-| `pause` | The speaker may have stopped (speech-off) | Within about 10 ms of the audio going quiet |
-| `end` | The segment is over | 0.24 s after speech-off, unless speech resumes. Never later than Silero alone |
+| `pause` | The speaker may have stopped (speech-off) | Within about 10 ms of the audio going quiet. Again when sound came back and the audio goes quiet again |
+| `end` | The segment is over | Where Silero alone ends it: after 0.24 s of Silero silence. With `VAD(early_end=True)` 0.24 s after speech-off if that is sooner. Never later than Silero alone |
 | `onset` | Speech may have begun | At the first confident frame, before `start` confirms it. Off by default: `VAD(onset_events=True)` |
 
 `vad.audio()` returns the running segment at any time, starting about 0.3 s
 before the speech. `end` carries the finished segment with its audio, start
-time, end time and the time the speech stopped.
+time, end time and the time the speech stopped (from the quiet clock, so
+earlier and more exact than Silero's last speech frame).
 
 If your assistant talks while the microphone is open, pass
 `vad.feed(chunk, playback=True)` for those chunks so its own voice is handled
@@ -79,6 +80,13 @@ followed by more speech.
 - **Use it to start work you can cancel:** finalize the transcript, call the
   LLM, prepare the voice output. Cancel when speech continues. A wrong `pause`
   then costs almost nothing, and a right one saves hundreds of milliseconds.
+- **Act on every `pause`; the latest one counts.** A `pause` can come inside
+  the last word: the level dips before a final consonant or a weak last
+  syllable and comes back. When it does, the next quiet gives a new `pause`.
+  Redo the speculative work then (the audio is longer now) and drop the
+  older result.
+- **Nothing tells you that speech went on.** There is no "resume" event. A
+  `pause` is open until the next `pause` or the `end`.
 - **Never treat it as the end of the turn.** Only `end` closes a segment.
 - **Can't cancel quickly?** Ignore `pause` and wait for `end`. The extra
   false alarms would cost you more than they save.
@@ -95,9 +103,12 @@ vad_iterator = VADIterator(load_silero_vad(), sampling_rate=16000)
 speech_dict = vad_iterator(chunk, return_seconds=True)   # {'start': ...} / {'end': ...} / None
 ```
 
-The constructor and the results stay the same, but `end` arrives as soon as the
-audio goes quiet. Without a model argument, it uses the bundled Silero model and
-doesn't need torch.
+The constructor and the results stay the same. `end` is decided where Silero's
+own count decides it, and the sample it reports is where the audio went quiet,
+not Silero's first low frame. `VADIterator(..., early_end=True)` also decides
+it sooner, after quiet audio (see [Results](#results) for what that costs).
+Without a model argument, it uses the bundled Silero model and doesn't need
+torch.
 
 ## Using LiveKit Agents?
 
@@ -247,7 +258,9 @@ What to set:
 | your input is quiet and clean | nothing; the lead stays |
 | you would rather keep the old fixed floor | `VAD(floor_margin_db=None)` |
 | soft starts open segments you don't want (background voices) | `VAD(soft_start_s=None)` |
-| you want Silero's own count only, no early end | `VAD(quiet_rms=0)` |
+| you want the `end` sooner and accept more ends inside an utterance | `VAD(early_end=True)` |
+| you want one `pause` per stretch of speech, as in 0.0.5 | `VAD(repause_s=None)` |
+| you want Silero only, no quiet clock at all | `VAD(quiet_rms=0)` |
 | you want the level threshold only, as in 0.0.5 | `VAD(noise_subtract_db=None)` |
 | your input is quiet or a phone line, and clean | try `VAD(normalize_to_dbfs=-30)`, see below |
 
