@@ -63,7 +63,7 @@ def vaditerator_end(frames, start_thr=0.5, end_thr=0.35, min_silence_s=0.1):
             triggered = True
         elif triggered and p < end_thr:
             if temp_end is None:
-                temp_end = t - FRAME_S  # Silero records the frame start
+                temp_end = t  # silero_vad sets temp_end = current_sample, the end of the first low frame
             if t - temp_end >= min_silence_s:
                 last_end, triggered, temp_end = t, False, None
     return last_end
