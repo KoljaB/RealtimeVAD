@@ -18,13 +18,22 @@ pip install dist/livekit_plugins_realtimevad-<version>-py3-none-any.whl pytest p
 pytest tests                    # from a folder that holds only tests/ and no livekit/ directory
 ```
 
-The wheel holds `livekit/plugins/realtimevad/` (five files) and the license. The sdist adds
+The wheel holds `livekit/plugins/realtimevad/` (six files) and the license. The sdist adds
 `tests/`, `README.md` and `pyproject.toml`. The benchmarks are not packaged: they need the
 repository's test audio and a checkout of livekit/agents.
 
-The version comes from `livekit/plugins/realtimevad/version.py`. It still says 0.0.5, the version of
-RealtimeVAD the plugin first shipped beside; `update_options()` and `set_agent_speaking()` came
-after the 0.0.5 tag, so pick the version for the first upload before building it.
+The version comes from `livekit/plugins/realtimevad/version.py`: 0.1.0 for the first upload, the
+same number as the RealtimeVAD release it needs (`realtimevad>=0.1.0`). The two are versioned
+separately after that. Upload RealtimeVAD 0.1.0 first: the fresh-environment check above installs
+it from PyPI, and the plugin refuses to load an older core's options (`pause_mode`).
+
+Before the upload:
+
+- The README says "not on PyPI yet" and installs from a checkout: change both to
+  `pip install livekit-plugins-realtimevad` (or the other name, below).
+- The README's links to `benchmarks/`, `examples/` and `PAUSE.md` are absolute links to the `main`
+  branch on GitHub, because PyPI does not resolve relative ones. They work once the branch is pushed.
+- `dist/` in this folder may hold builds of an older version (it is git-ignored): delete it first.
 
 Upload (`twine upload dist/*`) is the one step not done.
 
@@ -42,7 +51,7 @@ A rename to `realtimevad-livekit` changes:
 |---|---|---|
 | `pyproject.toml`, `[project] name` | `livekit-plugins-realtimevad` | `realtimevad-livekit` |
 | Install command (this README, later the main README) | `pip install livekit-plugins-realtimevad` | `pip install realtimevad-livekit` |
-| File names in `dist/` | `livekit_plugins_realtimevad-0.0.5*` | `realtimevad_livekit-0.0.5*` |
+| File names in `dist/` | `livekit_plugins_realtimevad-0.1.0*` | `realtimevad_livekit-0.1.0*` |
 | What `pip show`, `pip list` and `importlib.metadata` call it | `livekit-plugins-realtimevad` | `realtimevad-livekit` |
 | The text of issue #5 | names the first | names the second |
 

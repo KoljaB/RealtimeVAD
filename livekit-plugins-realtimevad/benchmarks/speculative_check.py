@@ -49,7 +49,7 @@ PREEMPTIVE = {"max_retries": 10, "max_speech_duration": 30.0}
 ALL_ARMS = ["silero", "silero+speculative", "realtimevad", "realtimevad+speculative"]
 # SPEC_ARMS=silero+speculative,realtimevad+speculative runs (and reports) only those; SPEC_PAUSE sets ``pause``
 ARMS = [a for a in ALL_ARMS if a in os.environ.get("SPEC_ARMS", ",".join(ALL_ARMS)).split(",")]
-PAUSE = float(os.environ.get("SPEC_PAUSE", "0.1"))
+PAUSE = float(os.environ.get("SPEC_PAUSE", "0.15"))
 
 
 def core_version():

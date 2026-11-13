@@ -51,7 +51,7 @@ T, V = stt.SpeechEventType, agents_vad.VADEventType
 
 
 class SpeculativeSTT(stt.STT):
-    def __init__(self, *, stt: stt.STT, vad: agents_vad.VAD, pause: float = 0.1,
+    def __init__(self, *, stt: stt.STT, vad: agents_vad.VAD, pause: float = 0.15,
                  min_new_speech: float = 0.0) -> None:
         """
         Args:
