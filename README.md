@@ -1,30 +1,65 @@
 # RealtimeVAD
 
-*Know that the speaker stopped, about 90 ms before Silero does.*
+*An early "the speaker stopped" signal for voice assistants: about 90 ms before Silero on a close microphone, none on a distant one.*
 
-[RealtimeSTT](https://github.com/KoljaB/RealtimeSTT) · [RealtimeTTS](https://github.com/KoljaB/RealtimeTTS) · [Live demo](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) · [Spec](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md) · [LiveKit plugin](https://github.com/KoljaB/RealtimeVAD/blob/main/livekit-plugins-realtimevad/README.md)
+[RealtimeSTT](https://github.com/KoljaB/RealtimeSTT) · [RealtimeTTS](https://github.com/KoljaB/RealtimeTTS) · [Live demo](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) · [Results](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md) · [Quiet and noisy input](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md) · [Spec](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md) · [LiveKit plugin](https://github.com/KoljaB/RealtimeVAD/blob/main/livekit-plugins-realtimevad/README.md)
 
-A voice assistant can't do anything until it knows the user has stopped
-talking. Speech recognition, the LLM call and the voice output all wait for
-that one decision, and a normal voice activity detector takes a few hundred
-milliseconds to make it.
+A voice assistant can't answer until it knows the user has stopped talking.
+Speech recognition, the LLM call and the voice output all wait for that one
+decision, and a voice activity detector takes a few hundred milliseconds to
+make it.
 
-RealtimeVAD makes it sooner. It keeps [Silero VAD](https://github.com/snakers4/silero-vad)
-to decide what is speech, and adds a second, faster check: every 10 ms it
-compares the audio level with the room's noise and with the speaker's own
-level. The moment the audio goes quiet, you get an event, long before
-Silero's probability has fallen.
+RealtimeVAD gives you a second, earlier signal. It keeps
+[Silero VAD](https://github.com/snakers4/silero-vad) to decide what is speech,
+and every 10 ms it compares the audio level with the room's noise and with the
+speaker's own level. The moment the audio goes quiet you get a `pause` event,
+before Silero's probability has fallen. You start the answer on `pause` and
+cancel it if the speaker goes on.
 
-- **Input:** 16 kHz mono audio in chunks of any size (float32, int16 or int16 bytes).
-- **Output:** `start`, `pause` and `end` events, plus the audio of the running segment at any time.
-- **Lead:** speech-off (`pause`) a median 90 ms before Silero's probability drops, and 238 ms before Silero's `VADIterator` reports the end, on 3,118 real voice-assistant turns from one speaker.
-- **Other speakers, raw microphones:** 80 to 88 ms on 6,600 close-microphone clips of read and meeting speech from 214 speakers, earlier than Silero in 67 to 83 % of them; no lead on a distant table microphone. The last `pause` is more than 100 ms too early in 1 to 2 % of read sentences and 6 to 8 % of meeting clips.
-- **`end`:** exactly where Silero alone ends the segment, with the time the speech really stopped. Ending sooner is an option (`early_end=True`).
-- **Price:** `pause` also fires in short gaps between words, about twelve times as often as Silero.
-- **Your choice:** `pause_mode="fast"` gives about 40 ms more lead and puts one in five last pauses inside the last word ([details](#earlier-or-more-accurate-pause_mode)).
-- **Quiet input:** a quiet speaker's soft word endings are not silence; on a noisy quiet line the lead is gone instead ([details](#quiet-input-and-phone-audio)).
-- **Runs on:** one CPU thread, far faster than realtime. Needs only numpy and onnxruntime; the Silero model is bundled, no torch.
-- **Status:** alpha (0.0.5). The API may still change.
+- **Earlier:** `pause` comes a median 90 ms before Silero's probability drops, and 238 ms before Silero's `VADIterator` reports the end (3,118 real voice-assistant turns, one speaker).
+- **Other speakers:** 80 to 88 ms on 6,600 close-microphone clips from 214 speakers, without noise suppression.
+- **Quiet, noisy and phone input:** 84 to 122 ms on quiet speech, steady room noise and a phone line (simulated from the same turns).
+- **Nothing lost at the end:** `end` comes exactly where Silero alone puts it. No turn is cut that Silero would not cut.
+- **Small:** one CPU thread, about 8 ms per second of audio. Needs only numpy and onnxruntime; the Silero model is bundled, no torch.
+- **Drop-in:** a `VADIterator` with Silero's interface, and a plugin for LiveKit Agents.
+
+## Is it for you?
+
+RealtimeVAD only pays off in one kind of pipeline, and the lead depends on
+the audio. Check both before you build on it.
+
+**You need a pipeline that can start early and cancel fast.** `pause` fires in
+every short gap between words, about twelve times as often as Silero's own
+speech-off. Most pauses are followed by more speech. The gain comes from
+starting the transcript, the LLM call or the voice output at `pause` and
+throwing that work away when the speaker continues (speculative generation).
+
+| Your pipeline | What you get |
+|---|---|
+| Starts work at `pause` and cancels it within a few tens of milliseconds | The lead below, on every turn where the audio goes quiet |
+| Waits for the end of the turn before doing anything | Nothing. `end` is Silero's end. Use Silero |
+| Starts early but cannot cancel, or each start is expensive | More cost than gain: up to 1.7 times as many speculative requests in our LiveKit runs. Use Silero |
+| Already answers faster than the end of the turn arrives (fast streaming STT and LLM) | Little or nothing: 0 ms in our LiveKit run with a 0.1 s LLM |
+
+**The lead depends on the input.** It needs audio that goes quiet after a
+word. Median lead of the last `pause` over Silero's speech-off, default
+settings:
+
+| Input | Median lead | Earlier than Silero in |
+|---|---|---|
+| Close microphone with noise suppression, one speaker | 90 ms | 90 % of turns |
+| Read speech, raw microphone (LibriSpeech) | 80 – 84 ms | 83 % |
+| Meeting headset, speaker alone (AMI) | 88 ms | 79 % |
+| Meeting headset, others talking (AMI) | 84 ms | 67 % |
+| Quiet speaker, clean, −38 to −52 dBFS | 100 – 122 ms | 91 – 95 % |
+| Steady room noise 15 dB under the speaker (simulated) | 84 ms | 75 % |
+| Phone line, −38 to −58 dBFS (simulated) | 92 – 114 ms | 79 – 87 % |
+| **Distant table microphone (AMI)** | **0 ms** | 30 % |
+| **Steady noise within about 11 dB of the speaker** | **none** | – |
+| **Babble, music or street noise close under the speaker** | **expect none** (not measured; the noise subtraction does not apply) | – |
+
+Where there is no lead, RealtimeVAD behaves like Silero alone: correct, and
+no faster.
 
 ## Live demo
 
@@ -32,8 +67,10 @@ https://github.com/user-attachments/assets/d01900dd-9601-4f3d-8c88-db55e8bc83a1
 
 The video was recorded with 0.0.5 and a synthetic voice and shows a median lead of 92 ms.
 
-[demo/](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) runs this page on your own microphone. It shows, turn by turn, how much sooner
-RealtimeVAD knew that you stopped than Silero alone, on the same audio.
+[demo/](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) runs
+this page on your own microphone. It shows, turn by turn, how much sooner
+RealtimeVAD knew that you stopped than Silero alone, on the same audio. It is
+the quickest way to see what your microphone and room give you.
 
 ## Quick start
 
@@ -44,16 +81,20 @@ pip install realtimevad
 ```python
 from RealtimeVAD import VAD
 
-vad = VAD()
-for chunk in microphone_chunks():
+vad = VAD(resume_events=True)
+for chunk in microphone_chunks():            # 16 kHz mono, any chunk size
     for event in vad.feed(chunk):
         if event.kind == "start":
             stream_to_asr(vad.audio())       # includes the audio just before speech began
         elif event.kind == "pause":
-            speculate(vad.audio())           # the speaker may be done; this isn't the end yet
+            speculate(vad.audio())           # the speaker may be done: start the answer
+        elif event.kind == "resume":
+            cancel_speculation()             # the speaker went on
         elif event.kind == "end":
-            finalize(event.segment.audio)
+            finalize(event.segment.audio)    # the turn is over
 ```
+
+Input is 16 kHz mono audio as float32, int16 or int16 bytes.
 
 ## Events
 
@@ -61,44 +102,25 @@ for chunk in microphone_chunks():
 |---|---|---|
 | `start` | Speech has begun | After about 64 ms of confident speech, so clicks don't trigger it. Speech Silero is never confident about (a short "mm-hmm", a quiet phone voice) starts after about 0.13 s at half confidence, if it is clearly louder than the room |
 | `pause` | The speaker may have stopped (speech-off) | Within about 10 ms of the audio going quiet. Again when sound came back and the audio goes quiet again |
-| `end` | The segment is over | Where Silero alone ends it: after 0.24 s of Silero silence. With `VAD(early_end=True)` 0.24 s after speech-off if that is sooner. Never later than Silero alone |
+| `end` | The segment is over | Where Silero alone ends it: after 0.24 s of Silero silence. Never later than Silero alone |
 | `resume` | The speech went on after a `pause` | About 20 ms after sound is back. Off by default: `VAD(resume_events=True)` |
 | `onset` | Speech may have begun | At the first confident frame, before `start` confirms it. Off by default: `VAD(onset_events=True)` |
 
-`vad.audio()` returns the running segment at any time, starting about 0.3 s
-before the speech. `end` carries the finished segment with its audio, start
-time, end time and the time the speech stopped (from the quiet clock, so
-earlier and more exact than Silero's last speech frame).
-
-If your assistant talks while the microphone is open, pass
-`vad.feed(chunk, playback=True)` for those chunks so its own voice is handled
-as possible echo. Every threshold and duration can be configured;
-[SPEC.md](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md) lists what is guaranteed.
+- **Audio:** `vad.audio()` returns the running segment at any time, starting about 0.3 s before the speech.
+- **`end`** carries the finished segment with its audio, start time, end time and the time the speech stopped.
+- **Assistant talking:** pass `vad.feed(chunk, playback=True)` for chunks recorded while your assistant speaks, so its own voice is handled as possible echo.
+- **Guarantees:** [SPEC.md](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md) lists what is guaranteed and every setting.
 
 ## How to use `pause`
 
 `pause` is early and often wrong, on purpose. It fires on every breath, every
-short gap between words and every stop consonant, so most `pause` events are
-followed by more speech.
+short gap between words and every stop consonant.
 
-- **Use it to start work you can cancel:** finalize the transcript, call the
-  LLM, prepare the voice output. Cancel when speech continues. A wrong `pause`
-  then costs almost nothing, and a right one saves hundreds of milliseconds.
-- **Start at `pause`, cancel at `resume`, redo at the next `pause`.** With
-  `VAD(resume_events=True)` a `resume` tells you the speech went on: 20 ms
-  after sound came back, a median 50 ms after its `pause`. It takes back 91
-  to 95 % of the pauses that were followed by more speech (the rest are
-  replaced by the next `pause` or closed by `end` without one).
-- **Act on every `pause`; the latest one counts.** A `pause` can come inside
-  the last word: the level dips before a final consonant or a weak last
-  syllable and comes back. When it does, the next quiet gives a new `pause`.
-  Redo the speculative work then (the audio is longer now) and drop the
-  older result.
-- **Without `resume_events`** a `pause` is open until the next `pause` or
-  the `end`.
-- **Never treat it as the end of the turn.** Only `end` closes a segment.
-- **Can't cancel quickly?** Ignore `pause` and wait for `end`. The extra
-  false alarms would cost you more than they save.
+- **Start work you can cancel:** finalize the transcript, call the LLM, prepare the voice output.
+- **Cancel at `resume`.** It comes 20 ms after sound is back, a median 50 ms after its `pause`, and takes back 91 to 95 % of the pauses that were followed by more speech.
+- **Redo at the next `pause`; the latest one counts.** A `pause` can come inside the last word, when the level dips before a final consonant. The next quiet gives a new `pause` with more audio. Drop the older result.
+- **Never treat `pause` as the end of the turn.** Only `end` closes a segment.
+- **Keep `end` as the fallback.** In 3 to 9 % of clips the last `pause` is taken back by a `resume` and no new one comes before the `end`. Then `end` is the signal to act on.
 
 ## Earlier or more accurate: `pause_mode`
 
@@ -115,33 +137,54 @@ vad = VAD(pause_mode="fast")   # "accurate" (default), "balanced" or "fast"
 | `"balanced"` | 102 – 114 ms (112 ms) | 11 – 17 % | 2 – 7 % | 1.7 – 2.0 |
 | `"fast"` | 116 – 126 ms (130 ms) | 18 – 24 % | 4 – 10 % | 2.0 – 2.2 |
 
-The ranges are the four close-microphone sets of [Results](#results) (read
-sentences at the low end of "too early", meeting headsets at the high end);
-the figure in brackets is the 3,118 one-speaker turns.
+The ranges cover four close-microphone sets from 214 speakers; the figure in
+brackets is the 3,118 one-speaker turns.
 
-- **What `"fast"` costs:** about 40 ms more lead, and in one of five turns the
-  last `pause` comes more than 100 ms before the last word is over, with
-  audible sound of it still to come. Audio cut at that `pause` misses the end
-  of the word. Use it when what you start at `pause` copes with that, or is
-  redone at `end`.
-- **What it does not change:** `start`, `end` and the segment's audio. `end`
-  is where Silero alone ends the segment in every mode, and nothing more is
-  lost or cut. Only the optional `early_end=True` follows the quiet clock and
-  so moves with the mode; that combination ends more segments inside an
-  utterance: with `"fast"` 35 to 41 % of the clips in [Results](#end), against
-  33 to 38 % with `"accurate"` and 31 to 36 % for Silero alone. The segment's
-  `speech_end` is the quiet clock's, so it is early as often as the `pause`.
-- **How it works:** `"accurate"` reports a new `pause` when sound came back
-  after one, so the last one is rarely early. The other two report one
-  `pause` per stretch of speech and count audio as quiet 3 dB (`"balanced"`)
-  or 6 dB (`"fast"`) sooner, so the fading end of a word already counts.
-- **With `resume_events`:** in `"balanced"` and `"fast"` a `resume` comes
-  about 70 ms after sound is back, not 20 ms, because only sound long enough
-  for a new `pause` gives one.
-- **Detailed settings win.** The mode only sets `repause_s`, `quiet_rms`,
-  `floor_margin_db`, `speech_margin_db` and `noise_margin_db`
-  (`RealtimeVAD.vad.PAUSE_MODES`); any of them you pass yourself is used
-  as given.
+- **What `"fast"` costs:** in one of five turns the last `pause` comes more than 100 ms before the last word is over. Audio cut at that `pause` misses the end of the word.
+- **When to use it:** when what you start at `pause` copes with a missing word ending, or is redone at `end`.
+- **What stays the same:** `start`, `end` and the segment's audio, in every mode.
+
+Details and the full table: [results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md#speech-off-pause).
+
+## Results
+
+| Measured on | Result |
+|---|---|
+| 3,118 turns, one speaker: `pause` before Silero's probability falls below 0.5 | median 90 ms (p25 – p75: 72 – 112 ms), earlier in 90 % |
+| Same turns: `pause` before Silero's `VADIterator` end | median 238 ms, earlier in 96 % |
+| Same turns: `pause` followed by more speech | 1.9 per second of speech (Silero: 0.15) |
+| 6,600 close-microphone clips, 214 speakers: last `pause` more than 100 ms before the word ends | 1 – 2 % of read sentences, 6 – 8 % of meeting clips |
+| All 7,080 clips and all quiet, noisy and phone rows: `end` | same as Silero alone, never later |
+| CPU, one thread, Silero included | 8.3 ms per second of audio |
+
+- **Everything else:** [docs/results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md) has the full tables, the comparison with 0.0.5 and the `early_end` option.
+- **Quiet, noisy, phone:** [docs/quiet-and-noisy-input.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md) has every level and line we measured, backchannels and DC offset.
+- **Your own audio:** `python benchmarks/speech_off_lead.py <wav dir> out.json` measures the lead on 16 kHz mono WAVs, one turn each, with trailing silence.
+
+## Limits
+
+- **It is a signal for speculative pipelines only.** Without fast cancelling it gives you Silero's result with more events to ignore.
+- **No lead on a distant microphone or in loud noise.** See the table in [Is it for you?](#is-it-for-you).
+- **Earlier is not the same as correct.** The last `pause` is more than 100 ms early in 1 to 2 % of read sentences and 6 to 8 % of meeting clips, with audible sound of the last word still to come. Silero's own speech-off is that early in 0.2 to 0.3 % of read sentences: it is late, and rarely early.
+- **`end` has no lead.** It is Silero's end. `VAD(early_end=True)` ends a median 16 to 70 ms sooner and ends more segments inside an utterance (2 to 3 points more clips).
+- **Silero's limits remain.** Whisper is mostly not detected. Laughter, coughs and sneezes often are. Very quiet and narrowband speech makes Silero unsure, and RealtimeVAD with it.
+- **16 kHz mono only.** For 8 kHz audio without resampling, use Silero.
+- **Thin evidence in places.** The headline numbers come from one speaker and one capture chain (browser capture with noise suppression and echo cancellation, mostly quiet rooms). The room noise and the phone line are simulated. The LiveKit timings are one repetition on 10 to 16 sentences.
+- **Alpha.** The API may still change.
+
+## Settings
+
+| If … | then |
+|---|---|
+| you want `pause` earlier and accept that it is more often inside the last word | `VAD(pause_mode="balanced")` or `"fast"` |
+| you want to know when the speech went on after a `pause` | `VAD(resume_events=True)` |
+| you want the `end` sooner and accept more ends inside an utterance | `VAD(early_end=True)` |
+| you want one `pause` per stretch of speech, as in 0.0.5 | `VAD(repause_s=None)` |
+| your input is quiet or a phone line, and clean | try `VAD(normalize_to_dbfs=-30)` |
+| soft starts open segments you don't want (background voices) | `VAD(soft_start_s=None)` |
+| you want Silero only, no quiet clock at all | `VAD(quiet_rms=0)` |
+
+More settings and what each one costs: [quiet-and-noisy-input.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md#steady-noise-close-under-the-speaker-after-005).
 
 ## Already using Silero?
 
@@ -157,370 +200,16 @@ speech_dict = vad_iterator(chunk, return_seconds=True)   # {'start': ...} / {'en
 
 The constructor and the results stay the same. `end` is decided where Silero's
 own count decides it, and the sample it reports is where the audio went quiet,
-not Silero's first low frame. `VADIterator(..., early_end=True)` also decides
-it sooner, after quiet audio (see [Results](#results) for what that costs).
-Without a model argument, it uses the bundled Silero model and doesn't need
-torch.
+not Silero's first low frame. Without a model argument it uses the bundled
+Silero model and doesn't need torch.
 
-## Using LiveKit Agents?
+This interface has no `pause`, so on its own it gives you no speed. Use `VAD`
+for the early signal.
 
-[livekit-plugins-realtimevad/](https://github.com/KoljaB/RealtimeVAD/blob/main/livekit-plugins-realtimevad/README.md)
-is a VAD plugin: `realtimevad.VAD.load()` in place of `silero.VAD.load()`. Its
-README shows how the events map and what it measured against the Silero plugin
-on the same audio. In short: against the Silero plugin's defaults the end of
-speech comes about 380 ms sooner, but most of that is the shorter silence
-setting (0.25 s instead of 0.55 s), which Silero can be given too. At the
-same setting RealtimeVAD's end is 65 to 110 ms earlier, and LiveKit's turn
-detector starts 95 to 180 ms earlier. Inside a LiveKit session the turn was
-committed about 150 ms sooner than with Silero's defaults and about 70 ms
-sooner than with Silero at 0.25 s. These figures were measured with 0.0.5,
-whose `end` was the early end; with the default `end` of this version the
-plugin's end of speech comes where Silero's own count puts it.
+## Frameworks
 
-## Results
-
-### Speech-off (`pause`)
-
-One speaker: 3,118 turns from a live voice assistant (browser capture with
-noise suppression), each with its trailing silence, default settings. Silero's
-decisions are computed from the very same frame probabilities, so both see
-identical input. "Speech-off" is RealtimeVAD's last `pause` before the turn
-ended, against the first frame of Silero's final run below its threshold.
-
-| RealtimeVAD speech-off earlier than … | median | p25 – p75 | earlier in |
-|---|---|---|---|
-| Silero, probability below 0.5 (its default threshold) | 90 ms | 72 – 112 ms | 90 % |
-| Silero, probability below 0.35 (`VADIterator`'s end threshold) | 102 ms | 82 – 122 ms | 92 % |
-| Silero `VADIterator` end, default 100 ms minimum silence | 238 ms | 214 – 294 ms | 96 % |
-
-| Speech-off signals followed by more speech | per second of speech | turns without any |
-|---|---|---|
-| RealtimeVAD `pause` | 1.9 | 16 % |
-| Silero, probability below 0.5 | 0.15 | 84 % |
-
-Many speakers, raw microphones: 7,080 clips from 214 speakers with word
-timings (LibriSpeech read speech, AMI meeting headsets; no noise suppression),
-see [benchmarks/RESULTS-word-timing.md](https://github.com/KoljaB/RealtimeVAD/blob/main/benchmarks/RESULTS-word-timing.md).
-"Too early" means the last `pause` came more than 100 ms before the labelled
-end of the last word while at least 30 ms of audible sound of that word were
-still to come.
-
-| Audio | Last `pause` too early: 0.0.5 | now | Median lead over Silero: 0.0.5 | now | Earlier than Silero in: 0.0.5 | now | `pause` followed by more speech, per s: 0.0.5 | now |
-|---|---|---|---|---|---|---|---|---|
-| LibriSpeech clean | 7.6 % | 2.2 % | 88 ms | 84 ms | 84 % | 83 % | 1.64 | 1.97 |
-| LibriSpeech other | 6.2 % | 1.3 % | 86 ms | 80 ms | 82 % | 83 % | 1.42 | 1.70 |
-| AMI headset, speaker alone | 10.3 % | 5.7 % | 102 ms | 88 ms | 86 % | 79 % | 1.75 | 2.16 |
-| AMI headset, others talking | 11.1 % | 8.4 % | 100 ms | 84 ms | 77 % | 67 % | 1.81 | 2.28 |
-| AMI distant microphone | 2.6 % | 2.5 % | 0 ms | 0 ms | 30 % | 30 % | 0.60 | 0.88 |
-
-What changed after 0.0.5, and what it cost:
-
-- **A `pause` inside the last word is now followed by a better one.** The
-  level often dips under the threshold before a final consonant or a weak
-  last syllable and comes back for 20 to 60 ms. 0.0.5 reported nothing after
-  that, so the only `pause` was early. Now 20 ms of sound that is clearly
-  above the room lets the next quiet report a new `pause`. The first `pause`
-  comes exactly as early as before.
-- **The lead is measured on the last `pause`, so it fell:** from 100 ms
-  (earlier than Silero in 98 % of turns) to 90 ms (90 %) on the one-speaker
-  turns. There the last `pause` moved later in 28 % of turns, by a median
-  110 ms; in a sample of those, the sound that caused it was 20 to 38 dB above
-  the room. Pauses followed by more speech rose from 1.4 to 1.9 per second.
-- **What is left** are word endings that stay under the quiet threshold the
-  whole time (about 40 % of the remaining early pauses on LibriSpeech, 70 % on
-  the AMI headsets). On the headsets with other people talking, 8 % of the
-  last pauses are still too early. Silero's own speech-off is that early in
-  0.2 to 0.3 % of the read sentences: it is late, and rarely early.
-- The 206 ms against `VADIterator` in earlier versions of this page was
-  measured one 32 ms frame short; the same code gives 252 ms for 0.0.5 with
-  the fixes on this page, 238 ms with the new `pause`.
-- `VAD(repause_s=None)` gives one `pause` per stretch of speech, as in 0.0.5.
-
-The optional `resume` event on the same clips (close microphones): 1.6 to 2.1
-per second of speech; it comes a median 50 ms after its `pause` (p90 120 to
-150 ms) and 20 ms after the first 10 ms block that was not quiet again (p90
-50 ms). In 3 to 9 % of clips a `resume` follows the last `pause` and no new
-`pause` comes before the `end`: the turn then ends with the speculative work
-cancelled, and `end` is the signal to act on.
-
-The three `pause_mode` settings, and the one `pause` per stretch of 0.0.5 at
-today's thresholds (`repause_s=None`), on the same clips and turns:
-
-| | LibriSpeech clean | LibriSpeech other | AMI headset, alone | AMI headset, others talking | one speaker, 3,118 turns |
-|---|---|---|---|---|---|
-| **Median lead over Silero** | | | | | |
-| `"accurate"` | 84 ms | 80 ms | 88 ms | 84 ms | 90 ms |
-| `repause_s=None` | 90 ms | 88 ms | 102 ms | 98 ms | 102 ms |
-| `"balanced"` | 104 ms | 102 ms | 112 ms | 114 ms | 112 ms |
-| `"fast"` | 120 ms | 116 ms | 124 ms | 126 ms | 130 ms |
-| **Earlier than Silero in** | | | | | |
-| `"accurate"` | 83 % | 83 % | 79 % | 67 % | 90 % |
-| `repause_s=None` | 89 % | 88 % | 85 % | 75 % | 98 % |
-| `"balanced"` | 94 % | 92 % | 88 % | 82 % | 98 % |
-| `"fast"` | 96 % | 94 % | 91 % | 87 % | 98 % |
-| **Last `pause` too early** (more than 100 ms, sound to come) | | | | | |
-| `"accurate"` | 2.2 % | 1.3 % | 5.7 % | 8.4 % | – |
-| `repause_s=None` | 8.0 % | 6.8 % | 11.4 % | 12.4 % | – |
-| `"balanced"` | 13.9 % | 11.3 % | 13.8 % | 17.0 % | – |
-| `"fast"` | 23.5 % | 17.6 % | 20.1 % | 21.1 % | – |
-| **… more than 200 ms before the end of the word** | | | | | |
-| `"accurate"` | 0.1 % | 0.1 % | 1.6 % | 3.1 % | – |
-| `repause_s=None` | 1.6 % | 0.8 % | 3.8 % | 4.5 % | – |
-| `"balanced"` | 2.8 % | 1.7 % | 6.8 % | 6.8 % | – |
-| `"fast"` | 5.5 % | 3.6 % | 9.8 % | 8.8 % | – |
-| **`pause` followed by more speech, per s** | | | | | |
-| `"accurate"` | 1.97 | 1.70 | 2.16 | 2.28 | 1.86 |
-| `repause_s=None` | 1.66 | 1.44 | 1.74 | 1.83 | 1.38 |
-| `"balanced"` | 1.94 | 1.74 | 1.92 | 1.99 | 1.57 |
-| `"fast"` | 2.23 | 2.03 | 2.06 | 2.12 | 1.65 |
-
-- The one-speaker turns have no word timings, so "too early" cannot be
-  counted there.
-- All of the lead that the default gave up after 0.0.5 went to the repeated
-  `pause`: with `repause_s=None` the lead is that of 0.0.5 or 2 ms more. The
-  noise subtraction and the DC fix cost none.
-- The lead of the faster modes is partly the same thing as their price: a
-  `pause` inside the last word is early against Silero too.
-- Where noise or a phone line has taken lead away, the faster modes bring
-  some back: at −47 dBFS in room noise 84 ms (earlier than Silero in 75 %)
-  with `"accurate"`, 104 ms (82 %) with `"balanced"`, 130 ms (93 %) with
-  `"fast"`; on the phone line at −38 dBFS 92, 134 and 152 ms.
-- Ends while the speaker goes on, lost speech and missed starts are the same
-  as with Silero alone in all three modes, on every row above and on the
-  quiet, noisy and phone-line turns.
-- A `resume` comes a median 110 to 130 ms after its `pause` in `"balanced"`
-  and `"fast"` (50 ms in `"accurate"`), and takes back 89 to 95 % of the
-  pauses that were followed by more speech in every mode.
-
-### `end`
-
-By default `end` comes where Silero alone ends the segment (same thresholds,
-same 0.24 s): on all of the audio above, and in every row of the quiet-input
-table below, RealtimeVAD and Silero alone end the same number of turns while
-the speaker goes on, lose the same speech, and no `end` is later. The
-segment's `speech_end` is the quiet clock's, so you still learn where the
-speech stopped.
-
-Up to 0.0.5 the quiet clock also ended segments: 0.24 s after the audio went
-quiet. Silero's probability lags about 0.1 s behind the audio, so that is an
-end in pauses of 0.24 to 0.34 s that Silero alone rides through, the same
-trade as a shorter silence setting. It is now the option
-`VAD(early_end=True)`:
-
-| `early_end=True` against Silero alone | `end` earlier in | median | p25 – p75 | later in | Clips with an `end` inside the utterance: early end | Silero alone |
-|---|---|---|---|---|---|---|
-| one speaker, 2,323 turns | 85 % | 70 ms | 45 – 94 ms | 0 | – | – |
-| LibriSpeech clean | 60 % | 26 ms | 0 – 54 ms | 0 | 35.9 % | 33.1 % |
-| LibriSpeech other | 62 % | 30 ms | 0 – 66 ms | 0 | 33.3 % | 31.0 % |
-| AMI headset, speaker alone | 64 % | 48 ms | 0 – 92 ms | 0 | 38.1 % | 35.8 % |
-| AMI headset, others talking | 52 % | 16 ms | 0 – 88 ms | 0 | 33.2 % | 30.9 % |
-
-Silero's probabilities are the same with and without the quiet clock in all
-7,080 clips, with the default `end` and with the early end. The clips are whole sentences cut at 0.24 s, so a third of them contain a
-pause that long for any detector; the early end adds 2 to 3 points to that.
-The one-speaker turns have no word timings; there the early end left speech
-of the recording inside its 0.24 s wait in 49 of 3,401 turns.
-
-Reproduce with your own recordings (16 kHz mono WAVs, one turn each, with
-trailing silence):
-
-```bash
-python benchmarks/speech_off_lead.py <wav dir> out.json
-```
-
-## Quiet input and phone audio
-
-Up to 0.0.4, "quiet" had a fixed floor (`quiet_rms`, about −54 dBFS). For a
-speaker around −32 dBFS that is fine. For a quiet one (a phone line recorded at
-source level, a distant microphone) the floor sits only a few dB under the
-speech, their soft word endings counted as silence, and 0.24 s later the
-segment ended while they were still talking. Since 0.0.5 the floor follows
-the speaker: it is `quiet_rms` or 20 dB below the speaker's own level,
-whichever is lower (`floor_margin_db`).
-
-The same 3,401 turns, attenuated and sent through a simulated phone line
-(300–3400 Hz, 8 kHz, μ-law, line noise). "Ended while talking" counts turns
-with an end that the same detector does not make at the recorded level and
-that is followed by more speech. "Silero alone" is the same VAD with the quiet
-clock off, on the same audio.
-
-| Speech level | Ended while talking: 0.0.4 | 0.0.5 | Silero alone | Lost ≥ 100 ms of speech: 0.0.4 | 0.0.5 | Silero alone | Speech-off lead 0.0.5 |
-|---|---|---|---|---|---|---|---|
-| −32 dBFS (as recorded) | – | – | – | 0 | 0 | 0 | 100 ms |
-| −38 dBFS | 361 (11 %) | 36 | 58 | 13 | 8 | 8 | 108 ms |
-| −42 dBFS | 609 (18 %) | 37 | 97 | 26 | 10 | 10 | 116 ms |
-| −52 dBFS | 1,473 (43 %) | 215 | 155 | 868 | 26 | 23 | 132 ms |
-| −62 dBFS | 1,832 (54 %) | 269 | 303 | 1,778 | 419 | 415 | 124 ms |
-| −47 dBFS in room noise at −62 dBFS | 746 (22 %) | 125 | 312 | 295 | 93 | 93 | 0 ms |
-| phone line, −38 dBFS | 285 | 416 | 391 | 266 | 234 | 229 | 112 ms |
-| phone line, −48 dBFS | 667 | 265 | 275 | 311 | 301 | 294 | 0 ms |
-
-What this says, and what it doesn't:
-
-- **Quiet speakers are no longer cut.** Ends while the speaker talks and lost
-  speech are now where Silero alone has them. In all of these runs RealtimeVAD's
-  last end was never later than Silero's.
-- **A noisy quiet line had no lead in 0.0.5.** When the noise is less than
-  about 20 dB below the speaker (the room-noise row, and the quiet phone line
-  with its line noise), no level can be called quiet without calling soft
-  speech quiet. 0.0.5 then ends where Silero does: correct, and no faster.
-  The next section is about that.
-- **Very quiet and narrowband speech is a Silero limit.** At −62 dBFS, and on
-  the phone line, Silero itself is unsure. Speech it never scores 0.9 used to
-  start no segment at all (476 of the phone-line turns, 1,264 at −62 dBFS).
-  The soft start halves that (186 and 380); Silero at its own 0.5 threshold
-  still hears more (139 and 353). More turns found also means more ends counted
-  in the phone rows. Amplifying such input before the VAD helps Silero most.
-- **Borderline endings.** Ends with speech of the original recording inside
-  the 0.24 s that counted as quiet are rarer than in 0.0.4 by a factor of 10
-  at −52 dBFS (1,970 turns then, 182 now), but restarting the count after a
-  click added some back (141 without it). Ends followed by more speech and
-  lost speech did not rise with it.
-- The phone path is simulated, and the reference for "still talking" is the
-  original wideband recording. One speaker, one microphone.
-
-### The same rows now
-
-After 0.0.5: `end` is Silero's by default, levels are measured without a DC
-offset, steady noise is subtracted (next section), and a `pause` is repeated
-when sound came back. Same 3,401 turns; "early end" is `VAD(early_end=True)`.
-
-| Speech level | Ended while talking: default = Silero alone | early end | Lost ≥ 100 ms: default = Silero alone | Speech-off lead | earlier than Silero in | `pause` followed by more speech, per s | `end` earlier with early end, median |
-|---|---|---|---|---|---|---|---|
-| −32 dBFS (as recorded) | – | – | 0 | 90 ms | 90 % | 1.85 | 70 ms |
-| −38 dBFS | 58 | 34 | 8 | 100 ms | 91 % | 1.93 | 86 ms |
-| −42 dBFS | 97 | 34 | 10 | 104 ms | 92 % | 1.95 | 88 ms |
-| −52 dBFS | 155 | 177 | 23 | 122 ms | 95 % | 1.99 | 96 ms |
-| −62 dBFS | 303 | 268 | 415 | 98 ms | 76 % | 2.12 | 56 ms |
-| −47 dBFS in room noise at −62 dBFS | 304 | 123 | 106 | 84 ms | 75 % | 1.71 | 0 ms |
-| phone line, −38 dBFS | 392 | 416 | 227 | 92 ms | 86 % | 2.16 | 66 ms |
-| phone line, −48 dBFS | 275 | 255 | 294 | 114 ms | 87 % | 1.86 | 36 ms |
-| phone line, −58 dBFS | 312 | 263 | 910 | 98 ms | 79 % | 1.80 | 0 ms |
-
-"Ended while talking" counts ends that the same detector does not make at the
-recorded level. With the early end many ends move, so the count can be lower
-than Silero's; it does not mean fewer ends inside utterances (see
-[Results](#end)).
-
-### Steady noise close under the speaker (after 0.0.5)
-
-Where steady noise is too close under the speaker for a level threshold,
-RealtimeVAD now subtracts the room's spectrum (learned from the frames Silero
-does not call speech) from each 10 ms block's and asks whether what is left
-is below the quiet floor. A soft word ending stands out of the noise in a few
-bands and stays; the noise alone leaves next to nothing. It is used only where
-the noise is within 3 dB of the quiet floor or above it, so clean input is
-decided by the level exactly as before. The same 3,401 turns, before (0.0.5
-plus the DC fix) and after, measured with the early end on and before the
-repeated `pause` (the table above has today's defaults):
-
-| Speech level | Speech-off lead | earlier than Silero in | `end` earlier than Silero alone in | Ended while talking: before / after / Silero alone | Lost ≥ 100 ms: before / after / Silero alone |
-|---|---|---|---|---|---|
-| −47 dBFS in room noise at −62 dBFS | 0 → 90 ms | 25 → 77 % | 12 % | 124 / 123 / 304 | 106 / 105 / 106 |
-| phone line, −38 dBFS | 112 → 116 ms | 88 → 92 % | 80 % | 416 / 416 / 392 | 231 / 231 / 227 |
-| phone line, −48 dBFS | 0 → 118 ms | 39 → 89 % | 65 % (median 36 ms) | 263 / 255 / 275 | 301 / 301 / 294 |
-| phone line, −58 dBFS | 0 → 100 ms | 29 → 79 % | 25 % | 271 / 263 / 312 | 912 / 912 / 910 |
-
-The clean rows of the table above did not move (at most 9 of 3,401 turns per
-row end differently), and no end was later than Silero's. What it does not
-do:
-
-- The lead is in the speech-off (`pause`). In room noise the `end` itself is
-  still mostly Silero's: single noise blocks keep breaking the 0.28 s count.
-- Borderline endings rose with it: on the −48 dBFS phone line, ends with
-  speech of the original recording inside the wait went from 486 to 750 turns,
-  and Silero was confident again within 0.3 s after an end in 247 turns
-  instead of 82. Ends followed by more speech and lost speech did not rise.
-- It needs noise that is steady and at least about 11 dB under the speaker.
-  Babble, music and street noise are not subtracted away; nothing changes
-  there.
-- The room noise and the phone line are simulated (pink noise, white line
-  noise). All of the changes after 0.0.5 together cost 1.3 ms of CPU per
-  second of audio: 7.0 ms before, 8.3 ms now (one thread, Silero included,
-  idle machine).
-
-What to set:
-
-| If … | then |
-|---|---|
-| your input is quiet and clean | nothing; the lead stays |
-| you would rather keep the old fixed floor | `VAD(floor_margin_db=None)` |
-| soft starts open segments you don't want (background voices) | `VAD(soft_start_s=None)` |
-| you want the `end` sooner and accept more ends inside an utterance | `VAD(early_end=True)` |
-| you want `pause` earlier and accept that it is more often inside the last word | `VAD(pause_mode="balanced")` or `"fast"`, see [above](#earlier-or-more-accurate-pause_mode) |
-| you want one `pause` per stretch of speech, as in 0.0.5 | `VAD(repause_s=None)` |
-| you want Silero only, no quiet clock at all | `VAD(quiet_rms=0)` |
-| you want the level threshold only, as in 0.0.5 | `VAD(noise_subtract_db=None)` |
-| your input is quiet or a phone line, and clean | try `VAD(normalize_to_dbfs=-30)`, see below |
-
-```bash
-python benchmarks/quiet_input.py <wav dir> out.json
-```
-
-### Amplifying quiet input for Silero (optional)
-
-Silero is less sure about quiet speech, most of all on a phone line: it finds
-fewer turns and drops out inside them. `VAD(normalize_to_dbfs=-30)` amplifies
-the frames Silero sees, by up to 20 dB and never into clipping, until speech
-sits at −30 dBFS. Levels, the quiet clock and the audio you get back use the
-input as it came. Same turns as above:
-
-| Speech level | No segment at all: off | on | Lost ≥ 100 ms of speech: off | on |
-|---|---|---|---|---|
-| −32 dBFS (as recorded) | 0 | 0 | 0 | 2 |
-| −52 dBFS | 138 | 127 | 26 | 5 |
-| −62 dBFS | 380 | 357 | 419 | 40 |
-| −47 dBFS in room noise | 220 | 215 | 93 | 21 |
-| phone line, −38 dBFS | 186 | 142 | 234 | 125 |
-| phone line, −48 dBFS | 542 | 499 | 301 | 265 |
-| phone line, −58 dBFS | 1,569 | 1,203 | 910 | 411 |
-
-It is off by default because it is not free at normal level: 2 of 3,401 turns
-lost more than 100 ms, speech-off was earlier than Silero in 96 % instead of
-98 % of turns, and in one phone-line turn the end came later than Silero
-alone. It needs Silero to score the speech 0.5 at least once before it acts,
-so the first quiet words of a stream can still be missed. On noisy quiet input
-the ends moved by more than the benchmark's "ended while talking" count can
-judge, so that count is not given here; borderline endings did not rise.
-
-### Short backchannels
-
-"mm-hmm", "yeah", "okay": 200 real ones from meeting recordings (AMI corpus,
-close microphone, 0.15–0.8 s long). Up to 0.0.4, 50 of them were not reported
-as speech at all: Silero scored 35 between 0.5 and 0.9, below the start
-threshold, and 15 below 0.5. With the soft start 25 are missed, 15 of them
-Silero's own. A `start` comes a median 160 ms after the word begins. Whether
-such a sound is a backchannel, a turn or an interruption is not a VAD
-question and not answered here.
-
-## Limits
-
-- The numbers come from one speaker and one capture chain: browser capture
-  with noise suppression and echo cancellation, mostly quiet rooms.
-- The lead needs audio that actually goes quiet after a word, and noise
-  suppression helps that. In the 137 noisier turns (room level above −70 dBFS)
-  the median lead was 102–124 ms. Without noise suppression in a loud room,
-  expect less; with steady noise within about 20 dB of the speaker the
-  speech-off still leads (the early end mostly does not, see above), and
-  within about 11 dB there is no lead.
-- Earlier is not the same as correct. Against word timings the last `pause`
-  is still more than 100 ms early, with sound of the word to come, in 1 to 2 %
-  of read sentences and 6 to 8 % of meeting clips ([Results](#results)).
-- The lead is for speech-off. `end` is Silero's by default and has no lead;
-  with `early_end=True` it gains a median 18 to 70 ms and ends more segments
-  inside an utterance.
-- Whisper is mostly not detected (Silero scores it below 0.5). Laughter,
-  coughs and sneezes often are.
-- A DC offset in the input no longer hides the silence from the quiet clock
-  (up to 0.0.5 it did: no early `pause`, no early end). Levels are now measured behind a 20 Hz
-  high-pass; the audio you get back and what Silero sees keep the offset. On
-  the 3,401 turns with a constant offset of −40 dBFS added, the speech-off
-  lead was 0 ms (earlier than Silero in 6 % of turns) and is now 102 ms
-  (99 %), against 100 ms (98 %) without the offset. What is left is Silero
-  itself: it is a little less sure with an offset under the speech, most of
-  all under quiet speech (at −52 dBFS it finds no speech in 254 turns instead
-  of 139). Remove a large offset before the VAD if you have one.
-- 16 kHz mono only.
+- **LiveKit Agents:** [livekit-plugins-realtimevad/](https://github.com/KoljaB/RealtimeVAD/blob/main/livekit-plugins-realtimevad/README.md) is a VAD plugin plus a wrapper that starts LiveKit's preemptive generation at `pause`. LiveKit alone starts it only on a final transcript. With the wrapper the first agent audio came 120 to 139 ms sooner than with Silero in the same wrapper on Whisper, 56 to 88 ms on a streaming recognizer, and 0 ms with a 0.1 s LLM.
+- **Pipecat:** not supported. Its speech recognizers finalize only when the VAD reports the stop, so nothing can start at `pause` ([issue 4](https://github.com/KoljaB/RealtimeVAD/issues/4)).
 
 ## Development
 
@@ -540,8 +229,8 @@ python tests/audio/fetch_backchannels.py
 pytest tests/audio
 ```
 
-They take about 10 s with 8 worker processes and print what each test guards, with the
-measured value and its limit. Sources and licenses:
+They take about 10 s with 8 worker processes and print what each test guards,
+with the measured value and its limit. Sources and licenses:
 [LICENSES-audio.md](https://github.com/KoljaB/RealtimeVAD/blob/main/tests/audio/LICENSES-audio.md),
 [LICENSES-backchannels.md](https://github.com/KoljaB/RealtimeVAD/blob/main/tests/audio/LICENSES-backchannels.md).
 
