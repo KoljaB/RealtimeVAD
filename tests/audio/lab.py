@@ -128,6 +128,12 @@ def fx_clicks(x, rng, every_s):
     return y
 
 
+def fx_frames(x, rng):
+    """Silence at the end up to a whole number of model frames, so the next part of a
+    stream meets the model's 32 ms frames exactly as it would at the start of a stream."""
+    return np.concatenate((x, np.zeros(-len(x) % FRAME, np.float32)))
+
+
 def apply(x, fx, level_db, rng):
     """``fx``: list of (name, *args). ``level_db`` is the clean clip's speech level."""
     for name, *args in fx:

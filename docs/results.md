@@ -211,3 +211,34 @@ trailing silence):
 ```bash
 python benchmarks/speech_off_lead.py <wav dir> out.json
 ```
+
+## Long streams
+
+All figures above come from a fresh detector per clip. In a live session one
+detector hears every turn, and what it learns on the way (speaker level, room
+level, Silero's state) could move the pauses. It does not:
+
+| One stream (S) against a fresh detector per turn (F) | Lead over Silero, S / F | Last pause, S minus F (median) |
+|---|---|---|
+| 600 one-speaker turns in recording order, 72 min | 65 to 94 / 78 to 100 ms per 60 turns | -1 to +2 ms |
+| The same 60 turns eight times over, 57 min | 87 to 94 / 94 ms in every pass | -1 to +1 ms |
+| With a second voice 15 or 25 dB quieter after every turn | 90 to 103 / 94 ms | 0 to +1 ms |
+| With white room noise at -60 or -50 dBFS over everything | 89 to 99 / 95 to 106 ms | -1 to +2 ms |
+
+- **No trend with time** in any of these streams; the quiet threshold and the
+  learned speaker level were the same in stream and fresh detector to within
+  about 1 dB.
+- **The lead in a stream is 0 to 13 ms smaller** because Silero's own
+  speech-off comes that much earlier once the model has heard speech before.
+  The pause does not move.
+- **Where the 32 ms frames fall on a turn matters more than anything learned.**
+  The same utterance at another frame offset can get another end from Silero,
+  and its pauses follow. This is why single turns differ between runs.
+
+The test suite guards this with eight utterances repeated twelve times in one
+stream (`test_pause_does_not_drift_in_a_long_stream`). With your own
+recordings (a folder of turns, or one recorded session):
+
+```bash
+python benchmarks/long_stream.py <wav dir or session.wav>
+```

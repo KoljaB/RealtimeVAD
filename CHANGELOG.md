@@ -45,6 +45,14 @@ tables: [README](README.md), [docs/results.md](docs/results.md).
 - With the early end, a segment that opened right after an early end could
   end up to three frames before Silero's own count.
 
+### Tools
+
+- `benchmarks/long_stream.py`: turns in one long stream against a fresh
+  detector per turn. No drift on 72 minutes of one-speaker turns
+  ([docs/results.md](docs/results.md#long-streams)); a test now guards it.
+- `python demo/server.py --record DIR` keeps a demo session's audio and events
+  in local files, so a session that looked wrong can be replayed.
+
 ### Removed
 
 - No Pipecat integration is planned: its speech recognizers finalize only

@@ -95,6 +95,10 @@ if lab.available():
     # streams of several utterances
     TALK = [(c["file"], [("level", -30), ("pad", 0.3, 1.5), ("white", -65)]) for c in S24[::4]]
     STREAM = {chunk: case(f"stream/chunk{chunk}", TALK, chunk=chunk) for chunk in (160, 1024, 37)}
+    # the same eight utterances twelve times over in one stream: about ten minutes
+    LONG_PASSES = 12
+    LONG = case("long-stream", [(c["file"], [("level", -30), ("pad", 0.3, 1.5), ("frames",), ("white", -65)]) for c in S8] * LONG_PASSES,
+                kw={"early_end": False})
     LOUD_THEN_QUIET = [(case(f"loud-then-quiet/{quiet['id']}", [
         (loud["file"], [("level", -22), ("pad", 0.3, 1.0)]), (quiet["file"], [("level", -50), ("pad", 0.3, 1.0)])]), loud, quiet)
         for loud, quiet in zip(S8, S8[1:] + S8[:1])]
@@ -344,6 +348,31 @@ def test_long_stream_and_chunk_sizes(runs, guard):
         same = len(other["segments"]) == len(r["segments"]) and all(
             abs(a["start"] - b["start"]) < 1e-6 and abs(a["end"] - b["end"]) < 1e-6 for a, b in zip(r["segments"], other["segments"]))
         guard(f"chunks of {chunk} samples give the same segments", int(same), ">=", 1)
+    guard.done()
+
+
+def test_pause_does_not_drift_in_a_long_stream(runs, guard):
+    """Eight utterances, repeated twelve times in one stream of about ten minutes, default
+    settings. What the detector learns on the way (speaker level, room level, Silero's
+    state) must not move the pauses: the last pass has to look like the first. Every
+    utterance starts on a whole model frame, so the passes differ in nothing else (where the
+    32 ms frames fall on an utterance moves Silero's own decisions, and the pauses with them)."""
+    refs, results = runs
+    r = results[LONG]
+    bounds = r["offsets"] + [r["seconds"]]
+    pauses = [[t for kind, t, _, _ in r["events"] if kind == "pause" and a <= t < b] for a, b in zip(bounds, bounds[1:])]
+    last = [p[-1] - a if p else None for p, a in zip(pauses, bounds)]  # each utterance's last pause, from its start
+    n = len(S8)
+    first_pass, last_pass = slice(0, n), slice(n * (LONG_PASSES - 1), n * LONG_PASSES)
+    guard("utterances with a pause, of 96", sum(t is not None for t in last), ">=", n * LONG_PASSES)
+    later = [(b - a) * 1000 for a, b in zip(last[first_pass], last[last_pass]) if a is not None and b is not None]
+    guard("last pause in pass 12 later than in pass 1, median", float(np.median(later)), "<=", 10, "ms")
+    guard("last pause in pass 12 later than in pass 1, worst", max(later), "<=", 50, "ms")
+    worst = max(float(np.median([(b - a) * 1000 for a, b in zip(last[first_pass], last[n * k:n * (k + 1)])]))
+                for k in range(1, LONG_PASSES))
+    guard("last pause later than in pass 1, worst pass median", worst, "<=", 10, "ms")
+    count = [sum(len(p) for p in pauses[n * k:n * (k + 1)]) for k in range(LONG_PASSES)]
+    guard("pauses in the pass with the fewest, share of pass 1", min(count) / count[0], ">=", 0.9)
     guard.done()
 
 

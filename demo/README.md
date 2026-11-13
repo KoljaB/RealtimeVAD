@@ -65,6 +65,27 @@ is 8.
   actually quiet, which is what the 10 ms check reacts to. In a noisy recording
   the lead is much smaller.
 
+## Record a session
+
+A session that looked wrong can be kept and looked at again:
+
+```bash
+python demo/server.py --record recordings
+```
+
+Every connection then writes two files into that folder: the audio as the
+server received it (WAV) and every message it sent to the page (JSON lines;
+each frame also carries the speaker and room level the detector has learned).
+Nothing is recorded without `--record`, and the files stay on your machine.
+
+```bash
+python benchmarks/long_stream.py recordings/<session>.wav --demo
+```
+
+replays the session: once as one stream, and once with a fresh detector for
+every turn. If both are equally slow on a turn, the audio is the reason; if
+only the stream is, the detector's learned state is.
+
 ## Files
 
 | File | What it does |
