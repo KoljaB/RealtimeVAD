@@ -56,9 +56,11 @@ is 8.
 
 ## What to expect
 
-- **The video was recorded with 0.0.5 and a synthetic voice** and shows a
-  median lead of 92 ms. On real voice-assistant turns the measured median of
-  the current version is 92 ms as well.
+- **The video was recorded with 0.1.0 and a synthetic voice** (Breeze TTS) and
+  shows a median lead of 76 ms over its three turns (76, 72 and 78 ms). On real
+  voice-assistant turns the measured median of the current version is 92 ms.
+  Its first sentence begins with a short "Hey" and a small gap, and the turn
+  starts at the "Hey".
 - **The lead depends on the voice** and on how each sentence ends.
 - **Noise matters.** The page captures the microphone with the browser's noise
   suppression on, as a voice assistant would. That makes the gaps after words
