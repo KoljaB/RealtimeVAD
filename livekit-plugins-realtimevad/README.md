@@ -22,13 +22,11 @@ session = AgentSession(
 )
 ```
 
-The plugin is not on PyPI yet ([#5](https://github.com/KoljaB/RealtimeVAD/issues/5)).
-From a checkout of this repository:
-
 ```bash
-pip install "realtimevad>=0.1.0"
-pip install ./livekit-plugins-realtimevad
+pip install livekit-plugins-realtimevad
 ```
+
+It installs `realtimevad` 0.1.0 or newer with it.
 
 Plugin 0.1.0 needs RealtimeVAD 0.1.0 or newer: it relies on the end being
 Silero's by default and on the repeated pause.
