@@ -177,15 +177,16 @@ async def test_a_repeated_pause_replaces_the_first_one():
 
 @pytest.mark.parametrize("mode", ["accurate", "balanced", "fast"])
 async def test_sound_that_silero_does_not_hear_restarts_the_pause_only_while_its_own_count_is_short(mode):
-    # 192 ms of quiet audio, then 64 ms of sound that Silero does not hear as voice: long enough to re-arm
-    # the quiet clock, so the core reports a second pause in every mode. The wrapper reads the raw silence
-    # and does the same in all three. Silero lags (its count is at 32 ms when the sound comes) or does not (192 ms).
+    # 192 ms of quiet audio, then 64 ms of sound that Silero does not hear as voice. While Silero lags
+    # (its count is at 32 ms when the sound comes) the core reports a second pause, in every mode. Once
+    # Silero has counted longer than its lag (192 ms here) the core itself ignores the sound since
+    # RealtimeVAD 0.1.0 (repause_lag_s): one pause. The wrapper reads the raw silence and agrees in both.
     for lagging, requests in ((5, 2), (0, 1)):
         segments = LEAD + SPEECH + [(lagging, 0.6, 0.0), (6 - lagging, 0.1, 0.0), (2, 0.1, 0.1), (30, 0.1, 0.0)]
         pauses = []
         wrapped = Whisperish(takes=0.2)
         events = await run(segments, wrapped, on_pause=pauses.append, vad_options={"pause_mode": mode})
-        assert len(pauses) == 2
+        assert len(pauses) == requests
         # under ``pause`` (0.15 s) of Silero silence the request is made anew; over it, a noise
         # after the last word does not throw the transcript away
         assert len(wrapped.requests) == requests and wrapped.cancelled == requests - 1
