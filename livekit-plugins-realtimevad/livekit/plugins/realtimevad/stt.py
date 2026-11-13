@@ -128,10 +128,10 @@ class PauseFinder:
     """Reads the pauses of one VAD stream from its standard events.
 
     ``step(event)`` returns "pause" when the raw silence inside speech first reaches ``pause``
-    seconds and enough speech came since the last pause that was used, "resume" when speech goes
-    on after a pause (raw silence back at 0: the VAD heard voice again), else None. A VAD that
-    reports several pauses before one end (RealtimeVAD does when sound follows the first) shows
-    here as pause, resume, pause: the newest one counts.
+    seconds and enough speech came since the last pause that was used, "resume" when sound came
+    after a pause (raw silence back under ``pause``), else None. A VAD that reports several pauses
+    before one end (RealtimeVAD does when sound follows the first: its raw silence then counts
+    from the newest) shows here as pause, resume, pause: the newest one counts.
     """
 
     def __init__(self, pause: float, min_new_speech: float = 0.0) -> None:
@@ -151,8 +151,9 @@ class PauseFinder:
                 if self._speech + 1e-9 >= self._min_new:
                     self._speech = 0.0
                     return "pause"
-        elif ev.raw_accumulated_silence == 0:
-            self._speech += took
+        else:
+            if ev.raw_accumulated_silence == 0:
+                self._speech += took
             if self._told:
                 self._told = False
                 return "resume"

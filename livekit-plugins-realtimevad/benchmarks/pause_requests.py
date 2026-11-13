@@ -70,7 +70,10 @@ def replay(events, off, pause, min_new):
 async def main(path):
     items = real.material(("en-US",), 10, 0.5) + real.material(tuple(l for l in real.WHISPER_LANG if l != "en-US"), 2, 0.5)
     seen = {name: [(item, await events_of(make(), item["audio"])) for item in items] for name, make in VADS.items()}
-    out = [f"SpeculativeSTT's requests, replayed over {len(items)} sentences (10 English, 2 each in 7 more languages), "
+    import speculative_check
+
+    out = [f"Core: {speculative_check.core_version()}.",
+           f"SpeculativeSTT's requests, replayed over {len(items)} sentences (10 English, 2 each in 7 more languages), "
            f"speech {sum(i['off'] - i['on'] for i in items):.0f} s. Both VADs with 0.55 s to END_OF_SPEECH.",
            "requests: per sentence. last: the pause whose transcript becomes the reply, median ms of audio time after "
            "the true end of speech. missed: sentences without such a pause.", ""]

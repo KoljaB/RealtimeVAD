@@ -1,6 +1,7 @@
 """SpeculativeSTT: the transcript is requested at the pause, with scripted probabilities as in test_plugin."""
 
 import asyncio
+import inspect
 
 import pytest
 from livekit import rtc
@@ -61,9 +62,11 @@ class StreamingStream(stt.RecognizeStream):
                 pushed += item.samples_per_channel / item.sample_rate
 
 
-async def run(segments, wrapped, flush_at_end=False, **options):  # the VAD ends early: short test audio
+async def run(segments, wrapped, flush_at_end=False, on_pause=None, vad_options=EARLY, **options):  # the VAD ends early: short test audio
     probs = [p for n, p, _ in segments for _ in range(n)]
-    vad = realtimevad.VAD.load(probability=scripted(probs), **EARLY)
+    vad = realtimevad.VAD.load(probability=scripted(probs), **vad_options)
+    if on_pause is not None:
+        vad.on("pause", on_pause)
     speculative = realtimevad.SpeculativeSTT(stt=wrapped, vad=vad, **options)
     pcm = tone(segments)
     stream = speculative.stream()
@@ -155,3 +158,36 @@ async def test_min_new_speech_passes_over_pauses_after_too_little_speech():
     limited = Streaming()
     await run(segments, limited, min_new_speech=0.5)
     assert len(limited.flushes) == len(streaming.flushes) - 1
+
+
+async def test_a_repeated_pause_replaces_the_first_one():
+    # the audio goes quiet, 64 ms of sound follow (Silero says "voiced" throughout), then it is quiet for
+    # good: RealtimeVAD reports a pause, then a second one, and the second is the stop
+    again = [(5, 0.6, 0.0), (2, 0.6, 0.1)]
+    segments = LEAD + SPEECH + again + LAGGING
+    pauses = []
+    wrapped = Whisperish(takes=0.2)
+    events = await run(segments, wrapped, on_pause=pauses.append)
+    assert len(pauses) == 2 and pauses[1].timestamp == pytest.approx(pauses[0].timestamp + 7 * F, abs=0.011)
+    assert wrapped.cancelled == 1 and len(wrapped.requests) == 2  # the first request was dropped
+    assert wrapped.requests[1] == pytest.approx(wrapped.requests[0] + 7 * F, abs=0.04)  # asked again 0.1 s after the second
+    assert [e for e in events if e[0] in (S.PREFLIGHT_TRANSCRIPT, S.FINAL_TRANSCRIPT)] == [
+        (S.PREFLIGHT_TRANSCRIPT, "text 2"), (S.FINAL_TRANSCRIPT, "text 2")]
+
+
+REPAUSE = "repause_s" in inspect.signature(realtimevad.vad._Core.__init__).parameters
+
+
+@pytest.mark.skipif(not REPAUSE, reason="this RealtimeVAD reports one pause per stretch of Silero silence")
+async def test_a_repeated_pause_while_silero_says_silence_replaces_the_first_one_too():
+    # Silero's probability falls with the audio; 64 ms of sound that it does not hear as voice follow.
+    # Its silence count runs through, but the raw silence counts from the second pause.
+    segments = LEAD + SPEECH + [(5, 0.1, 0.0), (2, 0.1, 0.1), (30, 0.1, 0.0)]
+    pauses = []
+    wrapped = Whisperish(takes=0.2)
+    events = await run(segments, wrapped, on_pause=pauses.append, vad_options={})
+    assert len(pauses) == 2
+    assert wrapped.cancelled == 1 and len(wrapped.requests) == 2
+    assert wrapped.requests[1] == pytest.approx(wrapped.requests[0] + 7 * F, abs=0.04)
+    assert [e for e in events if e[0] in (S.PREFLIGHT_TRANSCRIPT, S.FINAL_TRANSCRIPT)] == [
+        (S.PREFLIGHT_TRANSCRIPT, "text 2"), (S.FINAL_TRANSCRIPT, "text 2")]

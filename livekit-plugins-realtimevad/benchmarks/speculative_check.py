@@ -30,6 +30,7 @@ import asyncio
 import ctypes
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -45,7 +46,26 @@ from livekit.plugins import realtimevad, silero  # noqa: E402
 
 SILENCE = 0.55
 PREEMPTIVE = {"max_retries": 10, "max_speech_duration": 30.0}
-ARMS = ["silero", "silero+speculative", "realtimevad", "realtimevad+speculative"]
+ALL_ARMS = ["silero", "silero+speculative", "realtimevad", "realtimevad+speculative"]
+# SPEC_ARMS=silero+speculative,realtimevad+speculative runs (and reports) only those; SPEC_PAUSE sets ``pause``
+ARMS = [a for a in ALL_ARMS if a in os.environ.get("SPEC_ARMS", ",".join(ALL_ARMS)).split(",")]
+PAUSE = float(os.environ.get("SPEC_PAUSE", "0.1"))
+
+
+def core_version():
+    if os.environ.get("SPEC_CORE"):  # a snapshot without git: say what it is
+        return os.environ["SPEC_CORE"]
+    import subprocess
+
+    import RealtimeVAD
+
+    where = Path(RealtimeVAD.__file__).resolve().parent
+    if "site-packages" in where.parts:
+        from importlib.metadata import version
+
+        return "realtimevad " + version("realtimevad")
+    head = subprocess.run(["git", "-C", str(where), "log", "-1", "--format=%h"], capture_output=True, text=True)
+    return "RealtimeVAD from source, commit " + head.stdout.strip()
 STTS = {
     # recognition is CPU-heavy and a speculative request may overlap the next: one session at a time,
     # two requests side by side on 3 threads each
@@ -61,7 +81,7 @@ STTS = {
 def session_parts(arm, inner):
     vad = (silero.VAD.load(min_silence_duration=SILENCE) if arm.startswith("silero")
            else realtimevad.VAD.load(min_silence_duration=SILENCE))
-    return vad, (realtimevad.SpeculativeSTT(stt=inner, vad=vad) if arm.endswith("+speculative") else inner)
+    return vad, (realtimevad.SpeculativeSTT(stt=inner, vad=vad, pause=PAUSE) if arm.endswith("+speculative") else inner)
 
 
 def measure(evs, on, off):
@@ -86,7 +106,8 @@ async def collect(name, path, label, langs=None):
     cfg["langs"] = tuple(lang for lang in cfg["langs"] if not langs or lang in langs)
     if name == "whisper":
         local_stt.whisper_model("base", workers=2, threads=3)
-    raw = {"runs": [], "started": time.strftime("%Y-%m-%d %H:%M:%S"), "rep": label}
+    raw = {"runs": [], "started": time.strftime("%Y-%m-%d %H:%M:%S"), "rep": label, "pause": PAUSE,
+           "core": core_version()}
     pool = {lang: [cfg["make"](lang) for _ in range(cfg["parallel"])] for lang in cfg["langs"]}
 
     async def one(arm, inner, audio, ttft):
@@ -94,7 +115,7 @@ async def collect(name, path, label, langs=None):
         return await real.run_session(lambda: vad, stt, audio, min_delay=0.5, ttft=ttft, preemptive=PREEMPTIVE)
 
     warm = real.material(cfg["langs"][:1], 1, 0.5)[0]  # first use loads models: not measured
-    await asyncio.gather(*(one(ARMS[i], s, warm["audio"][:real.SR * 4], 0.1)
+    await asyncio.gather(*(one(ARMS[i % len(ARMS)], s, warm["audio"][:real.SR * 4], 0.1)
                            for i, s in enumerate(pool[cfg["langs"][0]])))
     for item in real.material(cfg["langs"], cfg["per_lang"], 0.5):
         inners = pool[item["lang"]]
@@ -123,7 +144,8 @@ def report(paths):
     used = [r for r in runs if r["valid"]]
     out = [f"SpeculativeSTT in an AgentSession, livekit-agents 1.8.11, turn_detection='vad', min_delay 0.5 s, "
            f"{SILENCE} s of silence to END_OF_SPEECH in every arm, preemptive generation {PREEMPTIVE}, fake LLM and "
-           f"TTS (TTS: first audio 0.1 s after its text). {len(labels)} repetitions.",
+           f"TTS (TTS: first audio 0.1 s after its text). {len(labels)} repetitions. "
+           f"pause {sorted({p.get('pause', 0.1) for p in parts})}, core {sorted({p.get('core', 'realtimevad 0.0.5') for p in parts})}.",
            "Times in ms after the true end of speech: median over all runs (each repetition's median). n-N: N runs "
            "had no such event. Counts: one number per repetition.",
            "'sooner than silero' rows: the same clip in the same repetition, silero minus that arm: median (each "
@@ -160,10 +182,11 @@ def report(paths):
                                  ("sentences that became 2+ turns", "split")):
                 out.append(f"{label:{width}}" + "".join(f"{real.total(sel[a], field):>30}" for a in ARMS))
             for label, field in (("LLM call", "reply_llm"), ("first agent audio", "first_audio")):
-                for arm in ARMS[1:]:
+                for arm in ARMS[1:] if ARMS[0] == "silero" else []:
                     out.append(f"{label}, {arm} sooner than silero: {real.gain(sel[ARMS[0]], sel[arm], field)}")
-            out.append(f"first agent audio, realtimevad+speculative sooner than silero+speculative: "
-                       f"{real.gain(sel[ARMS[1]], sel[ARMS[3]], 'first_audio')}")
+            if "silero+speculative" in ARMS and "realtimevad+speculative" in ARMS:
+                out.append(f"first agent audio, realtimevad+speculative sooner than silero+speculative: "
+                           f"{real.gain(sel['silero+speculative'], sel['realtimevad+speculative'], 'first_audio')}")
         took = [t for r in used if r["stt"] == name for t in r["measure"]["request_s"]]
         if took:
             out.append(f"recognize() took median {np.median(took):.2f} s [{min(took):.2f}..{max(took):.2f}]")
