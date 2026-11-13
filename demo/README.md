@@ -1,6 +1,6 @@
 # RealtimeVAD live demo
 
-https://github.com/user-attachments/assets/d01900dd-9601-4f3d-8c88-db55e8bc83a1
+https://github.com/user-attachments/assets/ff349429-7f20-4312-9884-2d8b330e3ac5
 
 Talk into your microphone, stop, and see how much sooner RealtimeVAD knew you
 had stopped than Silero did. Both hear the same audio, and the page puts their
