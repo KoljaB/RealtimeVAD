@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/ff349429-7f20-4312-9884-2d8b330e3ac5
+
 # RealtimeVAD
 
 *Know that the speaker stopped, about 100 ms before Silero does.*
