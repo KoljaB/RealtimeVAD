@@ -1,18 +1,29 @@
 # RealtimeVAD plugin for LiveKit Agents
 
-[RealtimeVAD](https://github.com/KoljaB/RealtimeVAD) in LiveKit's VAD slot. A community plugin, not made by LiveKit.
+Makes a LiveKit agent start its reply at the user's pause, not at the VAD's
+`END_OF_SPEECH`. A community plugin, not made by LiveKit. Two parts:
+
+- **`SpeculativeSTT`** wraps your STT and asks it for the transcript at the
+  pause. LiveKit then begins the reply while the VAD still waits for its end.
+  Works with any LiveKit VAD, the Silero plugin included.
+- **`VAD`** is [RealtimeVAD](https://github.com/KoljaB/RealtimeVAD) in
+  LiveKit's VAD slot. It ends speech where the Silero plugin does and reports
+  the pause about 100 ms sooner.
 
 ```python
 from livekit.agents import AgentSession
-from livekit.plugins import realtimevad      # was: silero
+from livekit.plugins import realtimevad
 
+vad = realtimevad.VAD.load()                 # or silero.VAD.load()
 session = AgentSession(
-    vad=realtimevad.VAD.load(),              # was: silero.VAD.load()
+    vad=vad,
+    stt=realtimevad.SpeculativeSTT(stt=your_stt, vad=vad),
     ...
 )
 ```
 
-The plugin itself is not on PyPI yet ([#5](https://github.com/KoljaB/RealtimeVAD/issues/5)). From a checkout of this repository:
+The plugin is not on PyPI yet ([#5](https://github.com/KoljaB/RealtimeVAD/issues/5)).
+From a checkout of this repository:
 
 ```bash
 pip install "realtimevad>=0.0.5"
@@ -21,133 +32,38 @@ pip install ./livekit-plugins-realtimevad
 
 Tested with livekit-agents 1.8.11, Python 3.10+.
 
-## What it changes
+## What `SpeculativeSTT` does
 
-- **End of speech sooner.** `END_OF_SPEECH` comes 0.25 s after the audio went
-  quiet. The Silero plugin's default is 0.55 s after Silero's probability fell.
-- **The stop is reported where it happened.** LiveKit computes "user stopped
-  speaking" as the event time minus `silence_duration`. RealtimeVAD knows the
-  instant the audio went quiet; Silero's probability lags it by about 100 ms.
-- **The turn detector starts sooner.** LiveKit starts its turn detector when an
-  `INFERENCE_DONE` reports 0.2 s of `raw_accumulated_silence`. The plugin counts
-  that from the quiet clock, not from Silero's first silent frame.
-- **Very short sounds no longer interrupt.** LiveKit interrupts the agent when
-  `speech_duration` reaches 0.5 s, and that counter runs until `END_OF_SPEECH`.
-  With 0.25 s to the end, a sound under about 0.25 s never gets there. A
-  typical 0.35 s "mm-hmm" still does, as with Silero.
-- **More, shorter segments.** A 0.25 s pause inside a sentence ends a segment.
-  LiveKit commits a turn only after its own endpointing delay, so this splits
-  VAD segments, not turns. With a non-streaming STT behind LiveKit's
-  `StreamAdapter` every segment is its own request: use
-  `min_silence_duration=0.55` there.
-- **Stricter start.** A segment starts on Silero probability 0.9 (the Silero
-  plugin: 0.5), or after 0.13 s at 0.5 over audio clearly louder than the room.
-  Fewer false starts in noise, some more missed soft sounds.
+LiveKit starts a reply early ("preemptive generation", on by default) as soon
+as it has a final or preflight transcript. Nothing in LiveKit reads a VAD's
+pause for that, so the pause is put to use on the STT side:
 
-## How the events map
-
-LiveKit has three event types and no "pause".
-
-| RealtimeVAD | LiveKit | |
-|---|---|---|
-| `start` | `START_OF_SPEECH` | Same moment. `speech_duration` reaches back to where the speech began (a soft opening, or where Silero first passed 0.5); `frames` hold 0.5 s of padding plus the opening |
-| `end` | `END_OF_SPEECH` | Same moment. `silence_duration` reaches back to the instant the audio went quiet; `frames` hold the whole utterance, padding and trailing silence |
-| each 32 ms frame | `INFERENCE_DONE` | Silero's probability, the frame's audio at the input sample rate, `speech_duration` since the start, and the two raw counters below |
-| `pause` | (none) | Runs into `raw_accumulated_silence` and stops `raw_accumulated_speech`. Also `vad.on("pause", callback)` |
-| `onset` | (none) | `vad.on("onset", callback)` |
-
-LiveKit starts nothing from a VAD's pause itself. Its preemptive generation is
-triggered by transcripts, so the pause is put to use on the STT side: see the
-next section.
-
-`flush()` is a hard boundary, as LiveKit asks: the running speech is dropped
-without an `END_OF_SPEECH`, time starts again, and what the VAD learned about
-the room and the speaker is forgotten.
-
-## Options
-
-`VAD.load()` takes the Silero plugin's names where the meaning is the same:
-
-| Option | Default | Silero plugin | |
-|---|---|---|---|
-| `min_silence_duration` | 0.25 | 0.55 | LiveKit's audio turn detector refuses less than 0.25 |
-| `min_speech_duration` | 0.064 | 0.05 | Both come to two 32 ms frames |
-| `prefix_padding_duration` | 0.5 | 0.5 | |
-| `activation_threshold` | 0.9 | 0.5 | |
-| `deactivation_threshold` | 0.45 | 0.35 | |
-| `max_buffered_speech` | 60 | 60 | Longest speech kept in the `END_OF_SPEECH` frames |
-
-Any other keyword goes to `RealtimeVAD.VAD`, for example `soft_start_s=None`
-(no soft start), `quiet_rms=0` (no quiet clock: Silero's count alone),
-`floor_margin_db`, or `normalize_to_dbfs=-30` for quiet phone audio (see the
-main README for what it gains and costs).
-
-`vad.update_options(...)` changes the six options of the table while streams
-run, like the Silero plugin's. A running stream keeps what it has learned about
-the room and the speaker; a new `min_silence_duration` counts from the next
-pause. An option that `load()` got under RealtimeVAD's own name (`end_s`,
-`start_s`, ...) stays as given there.
-
-```python
-vad.update_options(min_silence_duration=0.55)   # e.g. while the user dictates a number
-```
-
-Not there: 8 kHz inference (input at any rate is resampled to 16 kHz).
-
-### When the agent speaks
-
-LiveKit gives a VAD audio frames and nothing else; it is not told when the agent
-speaks. To use RealtimeVAD's `playback` flag, tell the plugin yourself:
-
-```python
-vad = realtimevad.VAD.load()
-session = AgentSession(vad=vad, ...)
-session.on("agent_state_changed",
-           lambda ev: vad.set_agent_speaking(ev.new_state == "speaking"))
-```
-
-While it is set, and for 0.5 s after, RealtimeVAD does not learn the room's
-noise level from the audio and does not take Silero's recovery state from it,
-so echo of the agent's voice that gets past the echo canceller cannot shift
-either. Speech is detected as before: the user can still interrupt. Without the
-call the plugin relies on echo cancellation alone, like the Silero plugin.
-
-## Reply from the pause: `SpeculativeSTT`
-
-LiveKit begins a reply early ("preemptive generation") as soon as it has a
-final or preflight transcript. `SpeculativeSTT` wraps your STT and asks for the
-transcript at the pause, not at `END_OF_SPEECH`:
-
-```python
-vad = realtimevad.VAD.load(min_silence_duration=0.55)
-session = AgentSession(
-    vad=vad,
-    stt=realtimevad.SpeculativeSTT(stt=your_stt, vad=vad, pause=0.1),
-    ...
-)
-```
-
-- A **non-streaming STT** (LiveKit would call it once at `END_OF_SPEECH`) gets
-  the segment so far after `pause` seconds of raw silence. The text goes out as
-  a preflight transcript, and again as the final at `END_OF_SPEECH` without a
-  second request.
+- A **non-streaming STT** (Whisper and the like; LiveKit would call it once at
+  `END_OF_SPEECH`) gets the segment so far after `pause` seconds of raw silence.
+  The text goes out as a preflight transcript, and again as the final at
+  `END_OF_SPEECH` without a second request.
 - A **streaming STT with `capabilities.manual_flush`** is flushed at the pause.
   One without `manual_flush` cannot be finalized from outside: `ValueError`.
-- When speech goes on after the pause, that transcript is dropped. The reply
-  LiveKit began from it is never spoken.
 
-It uses public LiveKit API only and works with any VAD plugin, the Silero
-plugin included. [PAUSE.md](PAUSE.md) goes through LiveKit's source: what reads
-VAD events, why this is the one route from a pause to an earlier reply, and
-what a wrong pause costs. A full agent: [examples/speculative_agent.py](examples/speculative_agent.py).
+It uses public LiveKit API only. [PAUSE.md](PAUSE.md) goes through LiveKit's
+source with file and line: what reads VAD events, and why this is the one route
+from a pause to an earlier reply. A full agent:
+[examples/speculative_agent.py](examples/speculative_agent.py).
 
-### Measured
+| Option | Default | |
+|---|---|---|
+| `stt` | | the STT to wrap |
+| `vad` | | the VAD that finds the pauses, usually the session's |
+| `pause` | 0.1 | seconds of raw silence inside speech before the transcript is requested |
+| `min_new_speech` | 0.0 | pass over a pause when less speech than this came since the last request |
+
+## Measured
 
 A real `AgentSession` (`turn_detection="vad"`, `min_delay` 0.5 s), a real STT
 running locally, fake LLM and TTS, audio at real-time pace. All four columns
-wait 0.55 s of silence for `END_OF_SPEECH`; RealtimeVAD's end was set to
-Silero's count, so only the pause differs. Median ms after the true end of
-speech, 3 repetitions (they agree within 30 ms):
+wait 0.55 s of Silero silence for `END_OF_SPEECH`, so only the pause differs.
+Median ms after the true end of speech, 3 repetitions (they agree within
+30 ms):
 
 | First agent audio | Silero | Silero + `SpeculativeSTT` | RealtimeVAD | RealtimeVAD + `SpeculativeSTT` |
 |---|---|---|---|---|
@@ -157,33 +73,27 @@ speech, 3 repetitions (they agree within 30 ms):
 | **Cost** over all sentences: STT requests, Whisper | 17 | 38 | 17 | 63 |
 | … STT flushes / LLM calls, sherpa-onnx | 10 / 10 | 34 / 22 | 11 / 11 | 47 / 29 |
 
-Read it like this:
-
 - **The wrapper is most of the gain, and it does not need RealtimeVAD.** With
-  the Silero plugin's own raw silence as the pause the agent's audio comes
+  the Silero plugin's own raw silence as the pause, the agent's audio comes
   about 420 ms sooner (240 ms with the fast LLM).
 - **RealtimeVAD's earlier pause adds to that:** 140 ms with Whisper (10th to
   90th percentile of the sentences: 41 to 195), 59 ms (20 to 227) with the
   streaming recognizer, 27 ms (0 to 54) with the fast LLM.
-- **It pays for it with more speculative work:** 63 against 38 Whisper requests
-  for 16 sentences, 47 against 34 flushes and 29 against 22 LLM calls for 10.
-  Its pause fires more often inside a sentence (probably at short gaps that
-  Silero's probability bridges; not examined further).
+- **It pays with more speculative work:** 63 against 38 Whisper requests for 16
+  sentences, 47 against 34 flushes and 29 against 22 LLM calls for 10.
 - With a fast LLM the turn commit becomes the limit: the reply is ready before
   `END_OF_SPEECH`, and LiveKit does not speak before it. A shorter
   `min_silence_duration` is what moves that.
-- Without the wrapper the early pause does nothing in LiveKit. The 20 to 40 ms
-  in the "RealtimeVAD" column are its `END_OF_SPEECH`, which came about 30 ms
-  before the Silero plugin's although both count 0.55 s of Silero silence.
-- Not tested: the Silero plugin with a `pause` below 0.1 s, which would close
-  some of the gap at the price of more wrong pauses.
-- One English sentence became two turns in both RealtimeVAD columns with the
-  streaming recognizer and in neither Silero column; with Whisper one sentence
-  did in all four. Of the 48 Whisper runs per column, 2 or 3 had no transcript.
+- Without the wrapper the early pause does nothing in LiveKit.
 
-Preemptive generation ran with `max_retries` 10 and `max_speech_duration` 30 s
-in all columns; LiveKit's defaults (3 and 10 s) switch it off in a long turn
-with several pauses. Full output with the machine's load during each run:
+In these runs RealtimeVAD's `END_OF_SPEECH` still came about 30 ms before the
+Silero plugin's (the 20 to 40 ms in the "RealtimeVAD" column), and one English
+sentence with a 0.58 s gap became two turns with RealtimeVAD only. Both had one
+cause, fixed since: see "The VAD" below. One Hindi sentence had no reply in any
+column because the benchmark closed the session before Whisper was done
+(5.7 s for 12 s of audio); the benchmark now waits. Preemptive generation ran
+with `max_retries` 10 and `max_speech_duration` 30 s in all columns. Full
+output with the machine's load during each run:
 [benchmarks/speculative_check.txt](benchmarks/speculative_check.txt).
 
 ```bash
@@ -191,109 +101,173 @@ python benchmarks/speculative_check.py r1.json 1 sherpa     # models: see benchm
 python benchmarks/speculative_check.py report r*.json
 ```
 
-## Measured against the Silero plugin
+## What a wrong pause costs
 
-Both plugins got the same 20 ms frames through `vad.stream()`. From their
-events: when they fire, what they report, and what LiveKit would do with them
-(turn detector at 0.2 s of raw silence; commit at `END_OF_SPEECH`, but not
-before the reported stop plus `min_delay`, with an instant STT). Medians in ms.
+A pause is often not the end. When speech goes on:
 
-Sentences in 8 languages, 24 speakers, speech at −30 dBFS over faint noise:
+- The request is cancelled if it still runs, and its transcript is never sent.
+  The next pause asks again with all the audio so far: the newest pause always
+  replaces an older one.
+- A reply LiveKit already began from a transcript is replaced by the next
+  transcript or discarded when the turn is committed. It is never spoken.
+- A streaming STT that was flushed has finalized a fragment. LiveKit joins the
+  fragments of a turn, but the recognizer starts the next one without the
+  context of the first.
+- LiveKit starts at most `max_retries` (default 3) preemptive replies per turn
+  and none once the user has spoken for `max_speech_duration` (default 10 s).
+  A long turn with several pauses uses them up; then the reply starts at the
+  commit, as without the wrapper. Raise them in
+  `turn_handling={"preemptive_generation": {...}}`.
 
-| | Silero default (0.55 s) | Silero 0.25 s | RealtimeVAD (0.25 s) | RealtimeVAD 0.55 s |
+So the cost is one STT request, and possibly one LLM call, per pause that was
+not the end.
+
+### Fewer requests
+
+`pause` is the knob. Replayed over 24 sentences (165 s of speech, no STT; the
+requests the wrapper would make, and when the one that becomes the reply is
+made, in ms of audio after the true end of speech):
+
+| `pause` | Silero plugin: requests per sentence | … last request | RealtimeVAD: requests per sentence | … last request |
 |---|---|---|---|---|
-| **Opening:** `START_OF_SPEECH` after the speech began (median / p90) | 76 / 76 | 76 / 98 | 76 / 108 | 76 / 108 |
-| **Ending:** `END_OF_SPEECH` after the speech stopped | 684 | 364 | 295 | 600 |
-| Reported stop, later than the true stop | 108 | 108 | 27 | 44 |
-| Turn detector starts after the stop | 364 | 364 | 236 | 236 |
-| Turn committed after the stop, `min_delay` 0.5 / 0.3 | 684 / 684 | 608 / 408 | 527 / 327 | 600 / 600 |
-| **Segmentation:** segments per sentence | 1.0 | 1.62 | 1.79 | 1.04 |
-| **Interruption:** `speech_duration` reaches 0.5 s after the speech began | 524 | 524 | 492 | 492 |
+| 0.05 | 2.33 | 204 | 6.46 | 76 |
+| 0.1 (default) | 2.29 | 268 | 3.75 | 140 |
+| 0.15 | 2.21 | 300 | 2.54 | 188 |
+| 0.2 | 2.00 | 364 | 2.25 | 268 |
+| 0.3 | 1.58 | 460 | 1.92 | 380 |
 
-Other material, same four columns:
+- At about the same number of requests (2.3 to 2.5 per sentence) RealtimeVAD
+  with `pause=0.15` asks 15 to 80 ms sooner than the Silero plugin does at 0.05
+  or 0.1.
+- The Silero plugin's raw silence cannot ask before about 200 ms after the
+  speech. RealtimeVAD's can (140 ms, 76 ms), at 1.6 to 2.8 times the requests.
+- `min_new_speech` saves less and loses more: with RealtimeVAD at `pause=0.1`,
+  0.3 s takes the requests from 3.75 to 3.29 and passes over the last pause of
+  2 of the 24 sentences, which are then transcribed at `END_OF_SPEECH`; 1.0 s
+  gives 2.25 and loses 7.
 
-| | Silero default | Silero 0.25 s | RealtimeVAD | RealtimeVAD 0.55 s |
-|---|---|---|---|---|
-| Real turn starts from meetings (60): `END_OF_SPEECH` after the stop | 838 | 518 | 449 | 745 |
-| … `START_OF_SPEECH` after the turn began (median / p90) | 120 / 248 | 120 / 248 | 152 / 568 | 152 / 568 |
-| … `speech_duration` reaches 0.5 s after the turn began | 568 | 568 | 568 | 568 |
-| Turns with a 0.5–1.5 s pause (30): `END_OF_SPEECH` after the stop | 712 | 392 | 280 | 624 |
-| … turn detector starts after the stop | 392 | 392 | 215 | 209 |
-| … segments per turn | 2.4 | 3.23 | 3.23 | 2.47 |
-| Phone line at −45 dBFS (24): not heard at all | 1 | 1 | 2 | 2 |
-| … `END_OF_SPEECH` after the stop | 700 | 380 | 316 | 650 |
-| Real backchannels, 0.15–0.8 s (200): not heard at all | 19 | 19 | 24 | 24 |
-| … would interrupt the agent | 181 | 168 | 144 | 176 |
-| Coughs, laughter, sighs, sneezes (50): would interrupt the agent | 36 | 30 | 29 | 33 |
+Full table: [benchmarks/pause_requests.txt](benchmarks/pause_requests.txt)
+(`python benchmarks/pause_requests.py out.txt`).
 
-Read it like this:
+## The VAD
 
-- Against the Silero plugin as most people run it, the end of speech comes
-  about 380 ms sooner. Most of that is 0.25 s instead of 0.55 s of silence,
-  and Silero can be set to 0.25 s too.
-- At the same 0.25 s, RealtimeVAD's end is 65 to 110 ms earlier, its reported
-  stop 65 to 110 ms closer to the real one, and the turn detector starts 95 to
-  180 ms earlier. The commit moves by 70 to 105 ms at either `min_delay`.
-- Either VAD at 0.25 s splits sentences at short pauses; RealtimeVAD a little
-  more (1.79 against 1.62 segments per sentence).
-- `START_OF_SPEECH` is as fast on clear speech and slower on soft openings (p90
-  of 568 against 248 ms on the meeting turns). The audio of the opening is
+`realtimevad.VAD.load()` replaces `silero.VAD.load()` without changing where
+speech ends:
+
+- **`END_OF_SPEECH` where the Silero plugin puts it.** Same default, 0.55 s of
+  Silero silence, counted the way the Silero plugin counts (it smooths the
+  probability, which makes its end one or two 32 ms frames later than a count
+  on the raw probability; a gap of just that length would otherwise end a
+  segment here and not there). Over the 24 sentences: median 684 ms after the
+  speech for both.
+- **The pause is early.** `raw_accumulated_silence` of the `INFERENCE_DONE`
+  events counts from the instant the audio went quiet, about 100 ms before
+  Silero's probability falls. That is what `SpeculativeSTT` reads, and what
+  LiveKit starts its turn detector on at 0.2 s.
+- **The stop is reported where it happened.** `silence_duration` of
+  `END_OF_SPEECH` reaches back to that instant.
+- **Stricter start.** A segment starts on Silero probability 0.9 (the Silero
+  plugin: 0.5), or after 0.13 s at 0.5 over audio clearly louder than the room.
+  Fewer false starts in noise; `START_OF_SPEECH` is later on soft openings (p90
+  of 568 against 248 ms on 60 real meeting turns) and a few more short, quiet
+  sounds are missed (24 against 19 of 200 backchannels). The opening's audio is
   still in the segment and `speech_duration` counts it, so interruptions come
-  as soon as with Silero or sooner.
-- It hears slightly fewer short and quiet sounds than Silero at 0.5 (24
-  against 19 of 200 backchannels missed). Fewer of them reach the 0.5 s that
-  interrupts the agent (144 against 181), mostly the very short ones.
+  as soon as with Silero.
 
-### Inside an AgentSession
+Why 0.55 s: it is the Silero plugin's default, so swapping the VAD changes no
+segment and no turn. The end is the safe signal and may be slow, because the
+reply no longer waits for it. A shorter end splits sentences into segments
+(1.6 to 1.8 per sentence at 0.25 s), and each is a transcript LiveKit may
+commit as a turn.
 
-The same three VADs in a real `AgentSession` (LiveKit's own end-of-turn and
-interruption logic, `turn_detection="vad"`, LiveKit's test fakes for STT, LLM
-and TTS, audio fed at real-time pace). Median over 6 sentences in 6 languages,
-ms after the true end or start of the speech:
+| RealtimeVAD | LiveKit | |
+|---|---|---|
+| `start` | `START_OF_SPEECH` | `speech_duration` reaches back to where the speech began; `frames` hold 0.5 s of padding plus the opening |
+| `end` | `END_OF_SPEECH` | `silence_duration` reaches back to the instant the audio went quiet; `frames` hold the whole utterance |
+| each 32 ms frame | `INFERENCE_DONE` | Silero's probability, the frame's audio at the input sample rate, the raw counters |
+| `pause` | (none) | Runs into `raw_accumulated_silence` and stops `raw_accumulated_speech`. Also `vad.on("pause", callback)` |
+| `onset` | (none) | `vad.on("onset", callback)` |
 
-| | Silero default (0.55 s) | Silero 0.25 s | RealtimeVAD (0.25 s) |
+`flush()` is a hard boundary, as LiveKit asks: the running speech is dropped
+without an `END_OF_SPEECH` and what the VAD learned about the room is forgotten.
+
+### Options
+
+| Option | Default | Silero plugin | |
 |---|---|---|---|
-| User state leaves "speaking" | 708 | 387 | 321 |
-| Turn committed, `min_delay` 0.5 (LiveKit's default) | 709 | 632 | 561 |
-| First agent audio, `min_delay` 0.5 | 812 | 734 | 663 |
-| Turn committed, `min_delay` 0.3 | 708 | 433 | 361 |
-| First agent audio, `min_delay` 0.3 | 811 | 535 | 463 |
-| Agent paused after the user starts talking over it | 506 | 506 | 503 |
-| … and the user's turn answered | 6 of 6 | 6 of 6 | 6 of 6 |
-| A 0.3–0.4 s backchannel pauses the speaking agent | 4 of 6 | 4 of 6 | 5 of 6 |
-| … the agent resumes after the sound ended | 2763 | 2444 | 2324 |
-| Accepted by LiveKit's default turn detector (needs ≥ 0.25 s) | yes | yes | yes |
+| `min_silence_duration` | 0.55 | 0.55 | LiveKit's audio turn detector refuses less than 0.25 |
+| `early_end` | `False` | | `True`: also end after `min_silence_duration` of quiet audio, see below |
+| `min_speech_duration` | 0.064 | 0.05 | Both come to two 32 ms frames |
+| `prefix_padding_duration` | 0.5 | 0.5 | |
+| `activation_threshold` | 0.9 | 0.5 | |
+| `deactivation_threshold` | 0.45 | 0.35 | |
+| `max_buffered_speech` | 60 | 60 | Longest speech kept in the `END_OF_SPEECH` frames |
 
-So in a session the turn is committed about 150 ms sooner than with the
-Silero plugin's defaults and about 70 ms sooner than with Silero at 0.25 s;
-with `min_delay` lowered to 0.3 s it is 350 ms and 70 ms. Interruptions come
-at the same time. No events out of order, no errors logged.
+Any other keyword goes to `RealtimeVAD.VAD`, for example `soft_start_s=None`,
+`floor_margin_db`, or `normalize_to_dbfs=-30` for quiet phone audio.
 
-```bash
-python benchmarks/agent_session_check.py out.json   # also needs a checkout of livekit/agents for its test fakes
+`vad.update_options(...)` changes the six options the Silero plugin also has
+while streams run. A running stream keeps what it has learned; a new
+`min_silence_duration` counts from the next pause.
+
+Not there: 8 kHz inference (input at any rate is resampled to 16 kHz).
+
+### When the agent speaks
+
+LiveKit gives a VAD audio frames and nothing else. To use RealtimeVAD's
+`playback` flag, tell the plugin yourself:
+
+```python
+session.on("agent_state_changed",
+           lambda ev: vad.set_agent_speaking(ev.new_state == "speaking"))
 ```
 
-One speaker per clip, no echo, no real room, a fake STT that answers 50 ms
-after the speech: these are timings of the VAD's part, not call quality.
+While it is set, and for 0.5 s after, RealtimeVAD does not learn the room's
+noise level from the audio. Speech is detected as before: the user can still
+interrupt.
 
-With a real STT the earlier `END_OF_SPEECH` can be worth nothing. One run with
-a streaming recognizer that finalizes on its own endpoint, about 940 ms after
-the speech (10 English sentences): the turn was committed when that transcript
-came, and the median gain was 0 ms against the Silero plugin's default and 0 to
-21 ms against Silero at 0.25 s
-([benchmarks/agent_session_real_stt.txt](benchmarks/agent_session_real_stt.txt)).
-The earlier end pays off only when the transcript is there before it.
+### `early_end=True`
+
+The segment also ends after `min_silence_duration` of quiet audio, without
+waiting for Silero. Measured on the plugin's events, sentences in 8 languages,
+median ms after the speech stopped:
+
+| | Silero default (0.55 s) | Silero 0.25 s | RealtimeVAD early end 0.25 s |
+|---|---|---|---|
+| `END_OF_SPEECH` | 684 | 364 | 295 |
+| Segments per sentence | 1.0 | 1.62 | 1.79 |
+
+In an `AgentSession` with a fake STT that answers at once, the turn was
+committed about 70 ms sooner than with Silero at 0.25 s. With a real streaming
+STT that finalizes on its own endpoint (about 940 ms after the speech) the
+median gain was 0 ms: the turn waits for the transcript, not for the VAD
+([benchmarks/agent_session_real_stt.txt](benchmarks/agent_session_real_stt.txt),
+one run). The early end pays off only when the transcript is there before it,
+and it ends more segments inside a sentence. That is why it is an option.
 
 ```bash
-python benchmarks/compare_silero.py out.json     # needs the repository's test audio, see the main README
-pytest                                            # the event mapping, with scripted probabilities
+python benchmarks/compare_silero.py out.json        # needs the repository's test audio
+python benchmarks/agent_session_check.py out.json   # needs a checkout of livekit/agents for its test fakes
+pytest
 ```
+
+## Limits
+
+- The example agent has not been run against a LiveKit server (it needs one,
+  and API keys). The measurements use LiveKit's `AgentSession` with local
+  models and fake LLM and TTS.
+- LiveKit's cloud turn detector was not tested (`turn_detection="vad"`
+  throughout). From the source, an earlier pause starts its request sooner but
+  does not move the commit ([PAUSE.md](PAUSE.md)).
+- One speaker per clip, no echo, no real room.
+- The session table was measured before `END_OF_SPEECH` was aligned with the
+  Silero plugin's count and before superseded requests were cancelled.
 
 ## Pipecat
 
-Tracked in [#4](https://github.com/KoljaB/RealtimeVAD/issues/4). Pipecat's slot is different: a `VADAnalyzer` only supplies a probability per
-window and Pipecat runs its own start/stop timers on it. RealtimeVAD's early end
-does not fit through that without overriding `analyze_audio`. Not done here.
+Not supported: Pipecat's STTs finalize only on the VAD's stop, so a pause
+cannot start speculative generation there
+([#4](https://github.com/KoljaB/RealtimeVAD/issues/4), closed as not planned).
 
 ## License
 

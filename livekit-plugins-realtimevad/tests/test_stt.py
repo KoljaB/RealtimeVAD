@@ -8,7 +8,7 @@ from livekit.agents import stt
 from livekit.agents.stt import SpeechEventType as S
 from livekit.plugins import realtimevad
 
-from test_plugin import LAGGING, LEAD, SPEECH, T_QUIET, F, scripted, tone
+from test_plugin import EARLY, LAGGING, LEAD, SPEECH, T_QUIET, F, scripted, tone
 
 ON = 5 * F
 
@@ -16,15 +16,19 @@ ON = 5 * F
 class Whisperish(stt.STT):
     """Not streaming: answers "text 1", "text 2", ... and notes how much audio each request held."""
 
-    def __init__(self, fail_first=False):
+    def __init__(self, fail_first=False, takes=0.01):
         super().__init__(capabilities=stt.STTCapabilities(streaming=False, interim_results=False))
-        self.requests, self._fail_first = [], fail_first
+        self.requests, self._fail_first, self._takes, self.cancelled = [], fail_first, takes, 0
 
     async def _recognize_impl(self, buffer, *, language=None, conn_options=None):
         frame = rtc.combine_audio_frames(buffer) if isinstance(buffer, list) else buffer
         self.requests.append(frame.samples_per_channel / frame.sample_rate)
         n = len(self.requests)
-        await asyncio.sleep(0.01)
+        try:
+            await asyncio.sleep(self._takes)
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
         if self._fail_first and n == 1:
             raise RuntimeError("no luck")
         return stt.SpeechEvent(type=S.FINAL_TRANSCRIPT, alternatives=[stt.SpeechData(language="en", text=f"text {n}")])
@@ -57,9 +61,9 @@ class StreamingStream(stt.RecognizeStream):
                 pushed += item.samples_per_channel / item.sample_rate
 
 
-async def run(segments, wrapped, flush_at_end=False, **options):
+async def run(segments, wrapped, flush_at_end=False, **options):  # the VAD ends early: short test audio
     probs = [p for n, p, _ in segments for _ in range(n)]
-    vad = realtimevad.VAD.load(probability=scripted(probs))
+    vad = realtimevad.VAD.load(probability=scripted(probs), **EARLY)
     speculative = realtimevad.SpeculativeSTT(stt=wrapped, vad=vad, **options)
     pcm = tone(segments)
     stream = speculative.stream()
@@ -123,3 +127,31 @@ async def test_a_streaming_stt_is_flushed_at_the_pause():
     assert len(both.flushes) == len(wrapped.flushes) + 1
     with pytest.raises(ValueError):
         realtimevad.SpeculativeSTT(stt=Streaming(manual_flush=False), vad=realtimevad.VAD.load())
+
+
+GAP = [(5, 0.6, 0.0)]  # 0.16 s quiet inside the sentence
+
+
+async def test_a_request_that_still_runs_when_speech_goes_on_is_cancelled():
+    wrapped = Whisperish(takes=0.2)  # longer than the gap (the test feeds 5 times faster than real time)
+    events = await run(LEAD + SPEECH + GAP + SPEECH + LAGGING, wrapped)
+    assert wrapped.cancelled == 1 and len(wrapped.requests) == 2
+    assert [e for e in events if e[0] in (S.PREFLIGHT_TRANSCRIPT, S.FINAL_TRANSCRIPT)] == [
+        (S.PREFLIGHT_TRANSCRIPT, "text 2"), (S.FINAL_TRANSCRIPT, "text 2")]
+
+
+async def test_min_new_speech_passes_over_pauses_after_too_little_speech():
+    segments = LEAD + SPEECH + GAP + SPEECH + LAGGING  # 0.32 s of speech before each pause
+    wrapped = Whisperish()
+    events = await run(segments, wrapped, min_new_speech=0.5)  # the first pause is passed over
+    assert len(wrapped.requests) == 1 and wrapped.requests[0] > 0.8  # asked at the second, with both parts
+    assert [e for e in events if e[0] in (S.PREFLIGHT_TRANSCRIPT, S.FINAL_TRANSCRIPT)] == [
+        (S.PREFLIGHT_TRANSCRIPT, "text 1"), (S.FINAL_TRANSCRIPT, "text 1")]
+    wrapped = Whisperish()
+    events = await run(segments, wrapped, min_new_speech=2.0)  # both passed over: a plain StreamAdapter
+    assert [e for e in events if e[0] != S.START_OF_SPEECH] == [(S.END_OF_SPEECH, None), (S.FINAL_TRANSCRIPT, "text 1")]
+    streaming = Streaming()
+    await run(segments, streaming)
+    limited = Streaming()
+    await run(segments, limited, min_new_speech=0.5)
+    assert len(limited.flushes) == len(streaming.flushes) - 1

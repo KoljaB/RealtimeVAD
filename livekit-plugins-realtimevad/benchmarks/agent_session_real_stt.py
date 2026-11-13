@@ -188,6 +188,12 @@ async def run_session(make_vad, stt, audio, *, min_delay, ttft, say=None, flush_
             audio_in.push(rtc.AudioFrame(data=pcm[i * FRAME:(i + 1) * FRAME].tobytes(), sample_rate=SR,
                                          num_channels=1, samples_per_channel=FRAME))
         rec("audio_done", round(late, 4))
+        # a slow recognizer may still be at work on the last segment: closing now would lose the turn
+        ends = [e["t"] for e in rec.events if e["kind"] == "vad_end_of_speech"]
+        for _ in range(750):  # at most 15 s
+            if not ends or any(e["kind"] == "playback_started" and e["t"] > ends[-1] for e in rec.events):
+                break
+            await asyncio.sleep(0.02)
     except Exception as e:
         rec("exception", repr(e))
     finally:

@@ -9,9 +9,10 @@ all with 0.55 s of silence to END_OF_SPEECH:
                          flushed by LiveKit at END_OF_SPEECH (``manual_flush``)
   silero+speculative     the Silero plugin, the STT inside ``realtimevad.SpeculativeSTT``: the
                          transcript is requested after 0.1 s of Silero's raw silence
-  realtimevad            RealtimeVAD with its END at Silero's timing (``quiet_end_s`` out of reach:
-                         only Silero's frame count ends a segment, the reported stop is Silero's last
-                         voiced frame) and the STT the way LiveKit runs it. The early pause is in
+  realtimevad            RealtimeVAD as the plugin loads it: END_OF_SPEECH where the Silero plugin
+                         puts it (the runs of 2026-11-13 in speculative_check.txt had the count on
+                         Silero's raw probability, about 30 ms sooner, before the plugin held the end
+                         for the Silero plugin's count) and the STT the way LiveKit runs it. The early pause is in
                          ``raw_accumulated_silence`` but nothing uses it.
   realtimevad+speculative  the same VAD, the STT inside ``SpeculativeSTT``: the transcript is
                          requested 0.1 s after the audio went quiet
@@ -59,7 +60,7 @@ STTS = {
 
 def session_parts(arm, inner):
     vad = (silero.VAD.load(min_silence_duration=SILENCE) if arm.startswith("silero")
-           else realtimevad.VAD.load(min_silence_duration=SILENCE, quiet_end_s=1e6))
+           else realtimevad.VAD.load(min_silence_duration=SILENCE))
     return vad, (realtimevad.SpeculativeSTT(stt=inner, vad=vad) if arm.endswith("+speculative") else inner)
 
 

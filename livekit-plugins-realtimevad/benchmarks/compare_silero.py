@@ -34,8 +34,8 @@ import lab  # noqa: E402
 CONFIGS = {
     "silero default (0.55 s)": lambda: silero.VAD.load(),
     "silero 0.25 s": lambda: silero.VAD.load(min_silence_duration=0.25),
-    "realtimevad default (0.25 s)": lambda: realtimevad.VAD.load(),
-    "realtimevad 0.55 s": lambda: realtimevad.VAD.load(min_silence_duration=0.55),
+    "realtimevad early end (0.25 s)": lambda: realtimevad.VAD.load(min_silence_duration=0.25, early_end=True),
+    "realtimevad early end 0.55 s": lambda: realtimevad.VAD.load(min_silence_duration=0.55, early_end=True),
 }
 
 

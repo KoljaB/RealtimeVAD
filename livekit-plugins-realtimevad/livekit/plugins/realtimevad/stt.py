@@ -24,8 +24,10 @@ adapter with the recognition moved forward to the pause:
 instant the audio went quiet; with the Silero plugin it starts about 100 ms later, so the adapter
 works with any LiveKit VAD and is that much earlier with this one.
 
-A pause is often not the end. Then the transcript was requested for nothing and the reply LiveKit
-began from it is cancelled when the next transcript arrives; nothing of it is spoken, because
+A pause is often not the end. When speech goes on, the request is cancelled if it still runs and
+its transcript is never sent; a later pause asks again with all the audio up to there, so the
+newest pause always replaces an older one. The reply LiveKit
+began from a transcript that did go out is cancelled when the next transcript arrives; nothing of it is spoken, because
 LiveKit schedules a preemptive reply only once the turn is committed. The costs are extra STT
 requests and extra LLM calls, and LiveKit starts at most ``max_retries`` (default 3) preemptive
 replies per turn and none once the user has spoken for ``max_speech_duration`` (default 10 s);
@@ -49,13 +51,18 @@ T, V = stt.SpeechEventType, agents_vad.VADEventType
 
 
 class SpeculativeSTT(stt.STT):
-    def __init__(self, *, stt: stt.STT, vad: agents_vad.VAD, pause: float = 0.1) -> None:
+    def __init__(self, *, stt: stt.STT, vad: agents_vad.VAD, pause: float = 0.1,
+                 min_new_speech: float = 0.0) -> None:
         """
         Args:
             stt: a non-streaming STT, or a streaming one with ``capabilities.manual_flush``.
             vad: the VAD that finds the pauses (its own stream, as in LiveKit's StreamAdapter);
                 usually the session's VAD object.
             pause: seconds of raw silence inside speech after which the transcript is requested.
+            min_new_speech: a pause is only used when at least this many seconds of speech came
+                since the last request (or since the speech began). Limits the requests in speech
+                with many short pauses; a pause that is passed over costs nothing, and if it was
+                the end, the transcript is requested at END_OF_SPEECH as without this adapter.
         """
         caps = stt.capabilities
         if caps.streaming and not caps.manual_flush:
@@ -65,7 +72,7 @@ class SpeculativeSTT(stt.STT):
             streaming=True, interim_results=caps.streaming and caps.interim_results, diarization=False,
             offline_recognize=caps.offline_recognize, keyterms=caps.keyterms, chat_context=caps.chat_context,
             manual_flush=caps.streaming))  # LiveKit's flush at END_OF_SPEECH is passed on
-        self._wrapped, self._vad, self._pause = stt, vad, pause
+        self._wrapped, self._vad, self._pause, self._min_new_speech = stt, vad, pause, min_new_speech
         self._wrapped.on("metrics_collected", self._on_metrics)
 
     @property
@@ -110,6 +117,46 @@ class _Guess:
     def __init__(self) -> None:
         self.task: Optional["asyncio.Task[str]"] = None
         self.stale = False  # the user spoke on after the pause
+
+    def drop(self) -> None:
+        self.stale = True
+        if self.task is not None:
+            self.task.cancel()  # a request that still runs is for nothing
+
+
+class PauseFinder:
+    """Reads the pauses of one VAD stream from its standard events.
+
+    ``step(event)`` returns "pause" when the raw silence inside speech first reaches ``pause``
+    seconds and enough speech came since the last pause that was used, "resume" when speech goes
+    on after a pause (raw silence back at 0: the VAD heard voice again), else None. A VAD that
+    reports several pauses before one end (RealtimeVAD does when sound follows the first) shows
+    here as pause, resume, pause: the newest one counts.
+    """
+
+    def __init__(self, pause: float, min_new_speech: float = 0.0) -> None:
+        self._pause, self._min_new = pause, min_new_speech
+        self._told, self._speech, self._last = False, 0.0, 0.0
+
+    def step(self, ev: agents_vad.VADEvent) -> Optional[str]:
+        if ev.type == V.START_OF_SPEECH:
+            self._told, self._speech, self._last = False, ev.speech_duration, ev.timestamp
+            return None
+        if ev.type != V.INFERENCE_DONE or not ev.speaking:
+            return None
+        took, self._last = max(0.0, ev.timestamp - self._last), ev.timestamp
+        if ev.raw_accumulated_silence >= self._pause:
+            if not self._told:
+                self._told = True
+                if self._speech + 1e-9 >= self._min_new:
+                    self._speech = 0.0
+                    return "pause"
+        elif ev.raw_accumulated_silence == 0:
+            self._speech += took
+            if self._told:
+                self._told = False
+                return "resume"
+        return None
 
 
 class SpeculativeStream(stt.RecognizeStream):
@@ -160,25 +207,13 @@ class SpeculativeStream(stt.RecognizeStream):
             if inner is not None:
                 await inner.aclose()
 
-    def _pauses(self, ev: agents_vad.VADEvent, state: dict) -> Optional[str]:
-        """"pause" when the raw silence of a pause first reaches the limit, "resume" when speech goes on."""
-        if ev.type != V.INFERENCE_DONE or not ev.speaking:
-            return None
-        if ev.raw_accumulated_silence >= self._parent._pause:
-            if not state.get("told"):
-                state["told"] = True
-                return "pause"
-        elif ev.raw_accumulated_silence == 0 and state.get("told"):
-            state["told"] = False
-            return "resume"
-        return None
+    def _finder(self) -> PauseFinder:
+        return PauseFinder(self._parent._pause, self._parent._min_new_speech)
 
     async def _flush_at_pauses(self, vad_stream: agents_vad.VADStream, inner: stt.RecognizeStream) -> None:
-        state: dict = {}
+        pauses = self._finder()
         async for ev in vad_stream:
-            if ev.type == V.START_OF_SPEECH:
-                state.clear()
-            elif self._pauses(ev, state) == "pause":
+            if pauses.step(ev) == "pause":
                 inner.flush()
 
     async def _recognize(self, frames: list[rtc.AudioFrame]) -> str:
@@ -193,7 +228,7 @@ class SpeculativeStream(stt.RecognizeStream):
             type=kind, alternatives=[stt.SpeechData(language=language, text=text)], speech_end_time=speech_end_time))
 
     async def _recognize_at_pauses(self, vad_stream: agents_vad.VADStream) -> None:
-        state: dict = {}
+        pauses = self._finder()
         audio: list[rtc.AudioFrame] = []  # the running segment so far
         started_at = 0.0  # stream time of its START_OF_SPEECH
         guess: Optional[_Guess] = None
@@ -222,8 +257,8 @@ class SpeculativeStream(stt.RecognizeStream):
 
         try:
             async for ev in vad_stream:
+                what = pauses.step(ev)
                 if ev.type == V.START_OF_SPEECH:
-                    state.clear()
                     audio, started_at, guess = list(ev.frames), ev.timestamp, None
                     self._event_ch.send_nowait(stt.SpeechEvent(T.START_OF_SPEECH))
                 elif ev.type == V.END_OF_SPEECH:
@@ -234,17 +269,18 @@ class SpeculativeStream(stt.RecognizeStream):
                 elif ev.speaking:
                     if ev.timestamp > started_at + 1e-6:  # START_OF_SPEECH already held this frame's audio
                         audio.extend(ev.frames)
-                    what = self._pauses(ev, state)
                     if what == "pause":
                         if guess is not None:
-                            guess.stale = True
+                            guess.drop()
                         guess = _Guess()
                         guess.task = asyncio.create_task(guessed(guess, list(audio)))
                         guess.task.add_done_callback(lambda t: t.cancelled() or t.exception())  # may go unused
                     elif what == "resume" and guess is not None:
-                        guess.stale = True
+                        guess.drop()
             if finals is not None:
                 await finals
         finally:
+            if guess is not None:
+                guess.drop()
             if finals is not None:
                 await utils.aio.cancel_and_wait(finals)

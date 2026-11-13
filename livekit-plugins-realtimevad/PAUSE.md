@@ -92,7 +92,9 @@ Both use public API only: `stt.STT`, `stt.RecognizeStream`, `vad.VAD.stream()`,
 
 Wrong pause, speech continues:
 
-- `SpeculativeSTT` drops a transcript whose pause was followed by speech; it never becomes final.
+- `SpeculativeSTT` drops a transcript whose pause was followed by speech (and cancels the request
+  if it still runs); it never becomes final. The next pause asks again with all the audio so far,
+  so the newest pause replaces an older one.
 - The reply LiveKit already began from it keeps running until the next preflight or final
   transcript replaces it (`agent_activity.py:2646-2653`), an interim transcript moves past it
   (`audio_recognition.py:1392-1396`, `agent_activity.py:2692-2705`), or the turn is committed with a

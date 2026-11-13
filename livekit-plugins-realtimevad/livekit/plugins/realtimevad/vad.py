@@ -7,7 +7,8 @@ How RealtimeVAD's signals map to LiveKit's three event types:
                               where Silero first passed 0.5, whichever is earlier)
   end    -> END_OF_SPEECH     same moment; ``silence_duration`` reaches back to the instant the
                               audio went quiet (or Silero's last voiced frame), so LiveKit's
-                              "user stopped speaking" time is the real one
+                              "user stopped speaking" time is the real one. By default the end
+                              comes where the Silero plugin puts it (see ``early_end``).
   pause  -> no event of its own (LiveKit has none). The quiet clock runs into
             ``raw_accumulated_silence`` of the INFERENCE_DONE events, which is what LiveKit
             starts its turn detector on at 0.2 s, and stops ``raw_accumulated_speech``, which is
@@ -27,6 +28,7 @@ application calls (from the session's ``agent_state_changed`` event).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import weakref
 from dataclasses import dataclass, field
@@ -45,6 +47,11 @@ from .log import logger
 
 FRAME_S = FRAME / SAMPLE_RATE
 SLICE = 160  # the core is fed in 10 ms slices so the quiet clock is read at its own resolution
+NEVER = 1e6  # a quiet-clock wait that is never reached
+# The Silero plugin (livekit-plugins-silero 1.8.11, vad.py) counts silence on a smoothed probability:
+# ExpFilter(alpha=0.35), silent while it is at or below its deactivation threshold 0.35.
+SILERO_PLUGIN_ALPHA, SILERO_PLUGIN_DEACTIVATION = 0.35, 0.35
+_CORE_HAS_EARLY_END = "early_end" in inspect.signature(_Core.__init__).parameters
 
 
 @dataclass
@@ -55,6 +62,7 @@ class _Options:
     max_buffered_speech: float
     activation_threshold: float
     deactivation_threshold: float
+    early_end: bool = False
     core: dict = field(default_factory=dict)
 
 
@@ -74,28 +82,35 @@ class VAD(agents_vad.VAD):
         cls,
         *,
         min_speech_duration: float = 0.064,
-        min_silence_duration: float = 0.25,
+        min_silence_duration: float = 0.55,
         prefix_padding_duration: float = 0.5,
         max_buffered_speech: float = 60.0,
         activation_threshold: float = 0.9,
         deactivation_threshold: float = 0.45,
+        early_end: bool = False,
         **core_options: Any,
     ) -> "VAD":
         """
         Args:
             min_speech_duration: confident speech needed before START_OF_SPEECH.
-            min_silence_duration: quiet (or Silero silence) before END_OF_SPEECH. The Silero
-                plugin's default is 0.55; LiveKit's audio turn detector refuses less than 0.25.
+            min_silence_duration: Silero silence before END_OF_SPEECH; the Silero plugin's
+                default. LiveKit's audio turn detector refuses less than 0.25.
+            early_end: False (default): END_OF_SPEECH is not sent before the Silero plugin would
+                send it at the same ``min_silence_duration``; the earlier stop is in
+                ``raw_accumulated_silence`` (the pause). True: the segment also ends after
+                ``min_silence_duration`` of quiet audio, about 100 ms sooner and more often
+                inside a sentence.
             prefix_padding_duration: audio before the speech kept in the event frames.
             max_buffered_speech: longest speech kept in END_OF_SPEECH frames (the newest is kept).
             activation_threshold: Silero probability that starts speech (RealtimeVAD's 0.9, not
                 the Silero plugin's 0.5; speech that stays lower starts through the soft start).
             deactivation_threshold: probability below which a frame counts as silence.
             core_options: any other ``RealtimeVAD.VAD`` argument, e.g. ``soft_start_s=None``,
-                ``quiet_rms=0`` (quiet clock off: Silero's count alone), ``floor_margin_db``.
+                ``floor_margin_db``, ``normalize_to_dbfs``.
         """
         return cls(_Options(min_speech_duration, min_silence_duration, prefix_padding_duration,
-                            max_buffered_speech, activation_threshold, deactivation_threshold, dict(core_options)))
+                            max_buffered_speech, activation_threshold, deactivation_threshold, early_end,
+                            dict(core_options)))
 
     def __init__(self, opts: _Options) -> None:
         super().__init__(capabilities=agents_vad.VADCapabilities(update_interval=FRAME_S))
@@ -175,12 +190,32 @@ class VADStream(agents_vad.VADStream):
 
     def _new_core(self) -> _Core:
         o = self._opts
-        return _Core(**{
-            "start_s": o.min_speech_duration, "end_s": o.min_silence_duration,
-            "start_threshold": o.activation_threshold,
-            "continue_threshold": o.deactivation_threshold, **o.core,
-            "frame_events": True, "onset_events": True,
-        })  # the event frames are cut from this stream's own buffer: the core's preroll is not used
+        args = {"start_s": o.min_speech_duration, "end_s": o.min_silence_duration,
+                "start_threshold": o.activation_threshold, "continue_threshold": o.deactivation_threshold}
+        if _CORE_HAS_EARLY_END:
+            args["early_end"] = o.early_end
+        elif not o.early_end:
+            args["quiet_end_s"] = NEVER  # RealtimeVAD 0.0.5: the quiet clock always may end a segment
+        args.update(o.core)
+        self._own_extend = args.get("extend")
+        if not args.get("early_end", o.early_end):
+            args["extend"] = self._hold_for_silero_plugin
+        # the event frames are cut from this stream's own buffer: the core's preroll is not used
+        return _Core(**args, frame_events=True, onset_events=True)
+
+    def _hold_for_silero_plugin(self, t: float) -> Optional[float]:
+        """The core's ``extend``: asked on every frame once its own Silero count is full.
+
+        The core counts frames whose probability is below ``deactivation_threshold``. The Silero
+        plugin counts on a smoothed probability, which falls a frame or two later, so the same
+        number ends a segment there a frame or two later, and a pause of just that length ends it
+        here and not there. Hold the end until the Silero plugin's count would be full as well.
+        Runs inside ``core.feed`` before this frame's event: the counters are one frame behind.
+        """
+        missing = self._opts.min_silence_duration - (self._plugin_silent + 1) * FRAME_S
+        hold = (self._core_silent + 1) * FRAME_S + missing if missing > 1e-9 else None
+        own = self._own_extend(t) if self._own_extend is not None else None
+        return own if hold is None else hold if own is None else max(hold, own)
 
     def _retune(self) -> None:
         """Options changed (``VAD.update_options``): bring the running core in line, keeping its state."""
@@ -198,7 +233,7 @@ class VADStream(agents_vad.VADStream):
                 core.confirm_threshold = o.deactivation_threshold
         if "end_s" not in own and core.end_s != o.min_silence_duration:
             core.end_s = o.min_silence_duration
-            if "quiet_end_s" not in own:
+            if "quiet_end_s" not in own and (o.early_end or _CORE_HAS_EARLY_END):
                 core.quiet_end_s = o.min_silence_duration  # read when the quiet clock next arms
             # Silero's silence count is a number of frames that RealtimeVAD (0.0.5) derives from
             # end_s only when it is built; it has no public setter for it yet.
@@ -224,6 +259,12 @@ class VADStream(agents_vad.VADStream):
             ended = next((e for e in found if e.kind == "end"), None)
             for e in found:
                 seg, silent = None, quiet
+                if e.kind == "frame":  # what the Silero plugin would count, for _hold_for_silero_plugin
+                    p = e.frame.probability
+                    self._smoothed = p if self._smoothed is None else (
+                        SILERO_PLUGIN_ALPHA * self._smoothed + (1 - SILERO_PLUGIN_ALPHA) * p)
+                    self._plugin_silent = 0 if self._smoothed > SILERO_PLUGIN_DEACTIVATION else self._plugin_silent + 1
+                    self._core_silent = e.frame.silent_frames
                 if e.kind == "start":
                     seg = core.onset_lookback_s
                 elif e.kind == "frame" and ended is not None and e.time <= ended.time:
@@ -235,6 +276,8 @@ class VADStream(agents_vad.VADStream):
         if self._core is not None:
             self._core.reset()
         self._fed = 0  # 16 kHz samples fed since the stream began (or the last flush)
+        self._smoothed: Optional[float] = None  # the Silero plugin's smoothed probability
+        self._plugin_silent = self._core_silent = 0  # frames of silence: its count, the core's count
         self._buf = np.zeros(0, dtype=np.int16)  # input-rate audio for the event frames
         self._buf_t0 = 0.0  # stream time of its first sample
         self._pushed = 0  # input-rate samples received

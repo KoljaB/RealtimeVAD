@@ -15,6 +15,9 @@ LAGGING = [(24, 0.6, 0.0)]  # the audio is silent, Silero still says "voiced"
 LEAD = [(5, 0.1, 0.0)]  # idle frames first; 15 frames are 48 quiet-clock blocks exactly
 ON = 5 * F  # the speech begins
 T_QUIET = 15 * F + 0.01  # end of the first quiet 10 ms block after it
+# most tests here describe the early end: 0.25 s of quiet audio ends the speech
+EARLY = {"min_silence_duration": 0.25, "early_end": True}
+DEFAULTS = {"min_silence_duration": 0.55, "early_end": False}  # what VAD.load() has
 
 
 def scripted(probs):
@@ -40,7 +43,7 @@ async def run(segments, rate=16000, frame_ms=20, flush_at=None, at=(), vad=None,
         pcm = np.repeat(pcm, rate // 16000)[: len(pcm) * rate // 16000] if rate % 16000 == 0 else np.interp(
             np.arange(int(len(pcm) * rate / 16000)) * 16000 / rate, np.arange(len(pcm)), pcm).astype(np.int16)
     if vad is None:
-        vad = realtimevad.VAD.load(probability=scripted(probs), **load)
+        vad = realtimevad.VAD.load(probability=scripted(probs), **{**EARLY, **load})
     else:
         vad._opts.core["probability"] = scripted(probs)
     seen, todo = [], sorted(at, key=lambda x: x[0])
@@ -275,3 +278,31 @@ async def test_agent_speaking_reaches_the_core_as_playback(monkeypatch):
     vad.set_agent_speaking(True)
     await run([(10, *SILENT)], vad=vad)
     assert fed and all(playback for _, playback in fed)
+
+
+# -- the default: END_OF_SPEECH where the Silero plugin puts it ------------------------
+GONE = 0.1, 0.0  # Silero's probability falls with the audio
+
+
+async def test_by_default_the_end_waits_for_the_silero_plugins_count_and_the_pause_is_early():
+    events, _, _ = await run(LEAD + SPEECH + [(30, *GONE)], **DEFAULTS)
+    end = only(events, T.END_OF_SPEECH)[0]
+    # the Silero plugin smooths the probability (0.9 -> 0.38 -> 0.2): its count of 18 frames (0.55 s)
+    # begins one frame after the raw probability fell, so it is full with the 19th silent frame
+    assert end.timestamp == pytest.approx((15 + 19) * F)
+    quiet = [e for e in only(events, T.INFERENCE_DONE) if e.speaking and e.raw_accumulated_silence >= 0.1]
+    assert quiet[0].timestamp < end.timestamp - 0.4  # the pause is there long before the end
+
+
+async def test_a_gap_the_silero_plugin_bridges_does_not_end_the_segment():
+    # 18 silent frames are 0.576 s: the raw count is full, the Silero plugin's (one frame behind) is not
+    events, _, _ = await run(LEAD + SPEECH + [(18, *GONE)] + SPEECH + [(30, *GONE)], **DEFAULTS)
+    assert [e.type for e in events if e.type != T.INFERENCE_DONE] == [T.START_OF_SPEECH, T.END_OF_SPEECH]
+    with_early_end, _, _ = await run(LEAD + SPEECH + [(18, *GONE)] + SPEECH + [(30, *GONE)],
+                                     min_silence_duration=0.55)
+    assert len(only(with_early_end, T.END_OF_SPEECH)) == 2
+
+
+async def test_an_extend_callback_of_the_application_still_holds_the_end():
+    events, _, _ = await run(LEAD + SPEECH + [(40, *GONE)], extend=lambda t: 0.8, **DEFAULTS)
+    assert only(events, T.END_OF_SPEECH)[0].timestamp == pytest.approx((15 + 25) * F)  # 0.8 s are 25 frames

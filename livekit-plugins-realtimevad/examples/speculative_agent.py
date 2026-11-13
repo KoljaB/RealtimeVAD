@@ -17,7 +17,7 @@ server = AgentServer()
 
 @server.rtc_session()
 async def entrypoint(ctx: JobContext) -> None:
-    vad = realtimevad.VAD.load(min_silence_duration=0.55)
+    vad = realtimevad.VAD.load()  # END_OF_SPEECH where the Silero plugin puts it; the pause is early
     session = AgentSession(
         vad=vad,
         # Any non-streaming STT (LiveKit would put it behind its StreamAdapter and call it at
