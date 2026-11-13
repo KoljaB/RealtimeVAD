@@ -8,14 +8,19 @@ dynamic = ["version"]
 description = "RealtimeVAD as a VAD plugin for LiveKit Agents (community plugin, not made by LiveKit)"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10.0"
 authors = [{ name = "Kolja Beigel" }]
 keywords = ["vad", "voice activity detection", "livekit", "voice agent", "realtime"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = ["livekit-agents>=1.8", "realtimevad>=0.0.5", "numpy>=1.26"]
@@ -25,6 +30,8 @@ dev = ["pytest>=7", "pytest-asyncio>=0.23", "livekit-plugins-silero>=1.8"]
 
 [project.urls]
 Homepage = "https://github.com/KoljaB/RealtimeVAD"
+Documentation = "https://github.com/KoljaB/RealtimeVAD/tree/main/livekit-plugins-realtimevad"
+Issues = "https://github.com/KoljaB/RealtimeVAD/issues"
 
 [tool.hatch.version]
 path = "livekit/plugins/realtimevad/version.py"
@@ -33,7 +40,7 @@ path = "livekit/plugins/realtimevad/version.py"
 packages = ["livekit"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/livekit"]
+include = ["/livekit", "/tests"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

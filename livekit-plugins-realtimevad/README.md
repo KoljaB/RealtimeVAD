@@ -81,9 +81,35 @@ Any other keyword goes to `RealtimeVAD.VAD`, for example `soft_start_s=None`
 `floor_margin_db`, or `normalize_to_dbfs=-30` for quiet phone audio (see the
 main README for what it gains and costs).
 
-Not there: `update_options()`, 8 kHz inference (input at any rate is resampled
-to 16 kHz), and a way to tell the VAD that the agent is speaking (RealtimeVAD's
-`playback` flag); it relies on echo cancellation like the Silero plugin does.
+`vad.update_options(...)` changes the six options of the table while streams
+run, like the Silero plugin's. A running stream keeps what it has learned about
+the room and the speaker; a new `min_silence_duration` counts from the next
+pause. An option that `load()` got under RealtimeVAD's own name (`end_s`,
+`start_s`, ...) stays as given there.
+
+```python
+vad.update_options(min_silence_duration=0.55)   # e.g. while the user dictates a number
+```
+
+Not there: 8 kHz inference (input at any rate is resampled to 16 kHz).
+
+### When the agent speaks
+
+LiveKit gives a VAD audio frames and nothing else; it is not told when the agent
+speaks. To use RealtimeVAD's `playback` flag, tell the plugin yourself:
+
+```python
+vad = realtimevad.VAD.load()
+session = AgentSession(vad=vad, ...)
+session.on("agent_state_changed",
+           lambda ev: vad.set_agent_speaking(ev.new_state == "speaking"))
+```
+
+While it is set, and for 0.5 s after, RealtimeVAD does not learn the room's
+noise level from the audio and does not take Silero's recovery state from it,
+so echo of the agent's voice that gets past the echo canceller cannot shift
+either. Speech is detected as before: the user can still interrupt. Without the
+call the plugin relies on echo cancellation alone, like the Silero plugin.
 
 ## Measured against the Silero plugin
 

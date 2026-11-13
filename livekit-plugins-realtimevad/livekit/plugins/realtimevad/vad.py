@@ -17,17 +17,26 @@ How RealtimeVAD's signals map to LiveKit's three event types:
 INFERENCE_DONE comes once per 32 ms model frame, as with the Silero plugin, and carries the
 audio of that frame. Interruptions need nothing special: LiveKit interrupts when
 ``speech_duration`` of an INFERENCE_DONE reaches its ``min_duration``, counted from the start.
+
+LiveKit's VAD interface (``livekit.agents.vad``, 1.8.11) passes a stream audio frames, ``flush()``
+and ``end_input()`` and nothing else: a VAD is not told when the agent speaks. RealtimeVAD's
+``feed(chunk, playback=True)`` is therefore driven by ``VAD.set_agent_speaking()``, which the
+application calls (from the session's ``agent_state_changed`` event).
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
 from livekit import rtc
 from livekit.agents import vad as agents_vad
+from livekit.agents.types import NOT_GIVEN, NotGivenOr
+from livekit.agents.utils import is_given
 
 from RealtimeVAD import VAD as _Core
 from RealtimeVAD.silero import FRAME, SAMPLE_RATE
@@ -90,7 +99,9 @@ class VAD(agents_vad.VAD):
 
     def __init__(self, opts: _Options) -> None:
         super().__init__(capabilities=agents_vad.VADCapabilities(update_interval=FRAME_S))
-        self._opts = opts
+        self._opts = opts  # shared with the streams
+        self._streams: "weakref.WeakSet[VADStream]" = weakref.WeakSet()
+        self._agent_speaking = False
 
     @property
     def model(self) -> str:
@@ -105,7 +116,55 @@ class VAD(agents_vad.VAD):
         return self._opts.min_silence_duration
 
     def stream(self) -> "VADStream":
-        return VADStream(self, self._opts)
+        stream = VADStream(self, self._opts)
+        self._streams.add(stream)
+        return stream
+
+    def update_options(
+        self,
+        *,
+        min_speech_duration: NotGivenOr[float] = NOT_GIVEN,
+        min_silence_duration: NotGivenOr[float] = NOT_GIVEN,
+        prefix_padding_duration: NotGivenOr[float] = NOT_GIVEN,
+        max_buffered_speech: NotGivenOr[float] = NOT_GIVEN,
+        activation_threshold: NotGivenOr[float] = NOT_GIVEN,
+        deactivation_threshold: NotGivenOr[float] = NOT_GIVEN,
+    ) -> None:
+        """Change options of this VAD, its running streams included (the Silero plugin's signature).
+
+        A running stream keeps everything it has learned about the room and the speaker. A new
+        ``min_silence_duration`` counts from the next pause; a pause that is already being counted
+        ends on the old one. ``prefix_padding_duration`` and ``max_buffered_speech`` apply from the
+        next START_OF_SPEECH. An option that was also given to ``load()`` under RealtimeVAD's own
+        name (``end_s``, ``quiet_end_s``, ``start_s``, ...) stays as given there.
+        """
+        o = self._opts
+        for name, value in (("min_speech_duration", min_speech_duration),
+                            ("min_silence_duration", min_silence_duration),
+                            ("prefix_padding_duration", prefix_padding_duration),
+                            ("max_buffered_speech", max_buffered_speech),
+                            ("activation_threshold", activation_threshold),
+                            ("deactivation_threshold", deactivation_threshold)):
+            if is_given(value):
+                setattr(o, name, value)
+        for stream in self._streams:
+            stream._retune()
+
+    def set_agent_speaking(self, speaking: bool) -> None:
+        """Tell the VAD that the agent's own voice may be in the microphone signal.
+
+        While set, and for 0.5 s after it is cleared, audio is fed to RealtimeVAD with
+        ``playback=True``: room noise is not learned from it and Silero's recovery state is not
+        taken from it. Speech is still detected, so the user can interrupt. LiveKit does not tell a
+        VAD when the agent speaks; wire it to the session::
+
+            session.on("agent_state_changed", lambda ev: vad.set_agent_speaking(ev.new_state == "speaking"))
+        """
+        self._agent_speaking = bool(speaking)
+
+    @property
+    def agent_speaking(self) -> bool:
+        return self._agent_speaking
 
 
 class VADStream(agents_vad.VADStream):
@@ -118,26 +177,55 @@ class VADStream(agents_vad.VADStream):
         o = self._opts
         return _Core(**{
             "start_s": o.min_speech_duration, "end_s": o.min_silence_duration,
-            "preroll_s": o.prefix_padding_duration + o.min_speech_duration,  # the core counts the confirming frames in
             "start_threshold": o.activation_threshold,
             "continue_threshold": o.deactivation_threshold, **o.core,
             "frame_events": True, "onset_events": True,
-        })
+        })  # the event frames are cut from this stream's own buffer: the core's preroll is not used
 
-    def _feed(self, pcm: np.ndarray) -> list:
-        """Runs in the executor: (event, quiet-clock seconds, start of the segment's audio)."""
+    def _retune(self) -> None:
+        """Options changed (``VAD.update_options``): bring the running core in line, keeping its state."""
+        core, o = self._core, self._opts
+        if core is None:
+            return  # not built yet: _new_core reads the options
+        own = o.core  # RealtimeVAD's own names given to load() win, as they do in _new_core
+        if "start_s" not in own:
+            core.start_s = o.min_speech_duration
+        if "start_threshold" not in own:
+            core.start_threshold = o.activation_threshold
+        if "continue_threshold" not in own:
+            core.continue_threshold = o.deactivation_threshold
+            if "confirm_threshold" not in own:
+                core.confirm_threshold = o.deactivation_threshold
+        if "end_s" not in own and core.end_s != o.min_silence_duration:
+            core.end_s = o.min_silence_duration
+            if "quiet_end_s" not in own:
+                core.quiet_end_s = o.min_silence_duration  # read when the quiet clock next arms
+            # Silero's silence count is a number of frames that RealtimeVAD (0.0.5) derives from
+            # end_s only when it is built; it has no public setter for it yet.
+            if hasattr(core, "_end_frames") and hasattr(core, "_end_target"):
+                frames = max(1, math.ceil(o.min_silence_duration / FRAME_S - 1e-9))
+                extended = core._end_target != core._end_frames  # an ``extend`` callback holds this pause open
+                core._end_frames = frames
+                if not extended:
+                    core._end_target = frames
+            else:
+                logger.warning("this RealtimeVAD version cannot change min_silence_duration on a running "
+                               "stream; it applies to streams opened from now on")
+
+    def _feed(self, pcm: np.ndarray, playback: bool = False) -> list:
+        """Runs in the executor: (event, quiet-clock seconds, soft opening before the confirming frames)."""
         core, out = self._core, []
         for i in range(0, len(pcm), SLICE):
             part = pcm[i : i + SLICE]
             self._fed += len(part)
-            found = core.feed(part)
+            found = core.feed(part, playback=playback)
             armed, unbroken, blocks = core.quiet_clock
             quiet = blocks * SLICE / SAMPLE_RATE if armed and unbroken else 0.0
             ended = next((e for e in found if e.kind == "end"), None)
             for e in found:
                 seg, silent = None, quiet
-                if e.kind == "start":  # (where the segment's audio begins, soft opening before the confirming frames)
-                    seg = ((self._fed - len(core.audio())) / SAMPLE_RATE, core.onset_lookback_s)
+                if e.kind == "start":
+                    seg = core.onset_lookback_s
                 elif e.kind == "frame" and ended is not None and e.time <= ended.time:
                     silent = max(0.0, e.time - ended.segment.speech_end)  # the end in this slice already cleared the clock
                 out.append((e, silent, seg))
@@ -206,7 +294,7 @@ class VADStream(agents_vad.VADStream):
             frames16 = resampler.push(item) if resampler is not None else [item]
             for f in frames16:
                 pcm = np.frombuffer(f.data, dtype=np.int16)
-                self._publish(await loop.run_in_executor(None, self._feed, pcm))
+                self._publish(await loop.run_in_executor(None, self._feed, pcm, self._vad._agent_speaking))
             self._trim()
 
     def _publish(self, results: list) -> None:
@@ -216,16 +304,19 @@ class VADStream(agents_vad.VADStream):
                 # the frame event that follows in the same step carries the time and the debounce length
                 frame = next(r[0] for r in results[i + 1 :] if r[0].kind == "frame")
                 now = frame.time
-                self._speaking, self._seg_from = True, seg[0]
+                # the segment's audio: the padding, a soft opening, the confirming frames
+                confirmed = frame.frame.streak * FRAME_S + seg
+                self._speaking = True
+                self._seg_from = max(self._buf_t0, now - confirmed - self._opts.prefix_padding_duration)
                 # the speech began with the confirming frames and a soft opening before them, or
                 # where Silero first passed 0.5 on the way up, whichever is earlier
                 rising = (self._half_run + 1) * FRAME_S if frame.frame.probability >= 0.5 else 0.0
-                self._begin = now - max(frame.frame.streak * FRAME_S + seg[1], rising)
+                self._begin = now - max(confirmed, rising)
                 self._speech_run, self._silence_run = frame.frame.streak * FRAME_S, 0.0
                 send(agents_vad.VADEvent(
                     type=T.START_OF_SPEECH, samples_index=round(now * SAMPLE_RATE), timestamp=now,
                     speech_duration=now - self._begin, silence_duration=0.0,
-                    frames=self._frames(seg[0], now), speaking=True))
+                    frames=self._frames(self._seg_from, now), speaking=True))
             elif e.kind == "end":
                 s = e.segment
                 silence = max(0.0, e.time - s.speech_end)
