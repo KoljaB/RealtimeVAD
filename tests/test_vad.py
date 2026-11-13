@@ -766,3 +766,39 @@ def test_restore_reads_nothing_the_early_end_changes():
             if m.restores:
                 return i
     assert restored_at() == restored_at(quiet_rms=0) is not None
+
+
+def test_pause_mode_accurate_is_the_default_and_given_parameters_win():
+    default, accurate = VAD(probability=scripted([])), VAD(probability=scripted([]), pause_mode="accurate")
+    for vad in (default, accurate):
+        assert (vad.quiet_rms, vad.noise_margin_db, vad.speech_margin_db, vad.floor_margin_db, vad.repause_s) == (
+            0.002, 15.0, 15.0, 20.0, 0.02)
+    fast = VAD(probability=scripted([]), pause_mode="fast")
+    assert fast.repause_s is None and fast.quiet_rms == 0.004
+    mixed = VAD(probability=scripted([]), pause_mode="fast", repause_s=0.02, floor_margin_db=None)
+    assert (mixed.repause_s, mixed.floor_margin_db, mixed.quiet_rms) == (0.02, None, 0.004)
+    with pytest.raises(ValueError, match="accurate, balanced, fast"):
+        VAD(probability=scripted([]), pause_mode="fastest")
+
+
+@pytest.mark.parametrize("fade, early", [(0.0025, ["balanced", "fast"]), (0.0035, ["fast"])])
+def test_pause_mode_trades_an_earlier_pause_for_the_fading_end_of_the_word(fade, early):
+    # The word fades out for 50 ms at 32 or 29 dB under its level before the audio is silent.
+    # "accurate" waits for the silence; the faster modes count the fade as quiet already and
+    # report the pause 50 ms sooner, inside the word. Start and end do not move.
+    first, silent = (10 * FRAME + 160) / 16000, (10 * FRAME + 800 + 160) / 16000
+    for mode in ("accurate", "balanced", "fast"):
+        ev = word_then([(0, 800, fade)], early_end=False, pause_mode=mode)
+        assert kinds(ev) == ["start", "pause", "end"]
+        assert ev[1].time == pytest.approx(first if mode in early else silent)
+        assert ev[0].time == pytest.approx(F)
+        assert ev[2].time == pytest.approx(22 * F)  # Silero's count: 4 lagging frames, then 8 silent ones
+        assert not ev[2].segment.early
+
+
+def test_only_pause_mode_accurate_repeats_the_pause():
+    # Sound comes back for 30 ms after the first pause (see test_sound_after_a_pause_gives_a_new_pause).
+    assert kinds(word_then([(320, 480, 0.02)], pause_mode="accurate")).count("pause") == 2
+    assert kinds(word_then([(320, 480, 0.02)], pause_mode="balanced")).count("pause") == 1
+    assert kinds(word_then([(320, 480, 0.02)], pause_mode="fast")).count("pause") == 1
+    assert kinds(word_then([(320, 480, 0.02)], pause_mode="fast", repause_s=0.02)).count("pause") == 2

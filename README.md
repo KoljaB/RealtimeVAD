@@ -21,6 +21,7 @@ Silero's probability has fallen.
 - **Other speakers, raw microphones:** 80 to 88 ms on 6,600 close-microphone clips of read and meeting speech from 214 speakers, earlier than Silero in 67 to 83 % of them; no lead on a distant table microphone. The last `pause` is more than 100 ms too early in 1 to 2 % of read sentences and 6 to 8 % of meeting clips.
 - **`end`:** exactly where Silero alone ends the segment, with the time the speech really stopped. Ending sooner is an option (`early_end=True`).
 - **Price:** `pause` also fires in short gaps between words, about twelve times as often as Silero.
+- **Your choice:** `pause_mode="fast"` gives about 40 ms more lead and puts one in five last pauses inside the last word ([details](#earlier-or-more-accurate-pause_mode)).
 - **Quiet input:** a quiet speaker's soft word endings are not silence; on a noisy quiet line the lead is gone instead ([details](#quiet-input-and-phone-audio)).
 - **Runs on:** one CPU thread, far faster than realtime. Needs only numpy and onnxruntime; the Silero model is bundled, no torch.
 - **Status:** alpha (0.0.5). The API may still change.
@@ -98,6 +99,49 @@ followed by more speech.
 - **Never treat it as the end of the turn.** Only `end` closes a segment.
 - **Can't cancel quickly?** Ignore `pause` and wait for `end`. The extra
   false alarms would cost you more than they save.
+
+## Earlier or more accurate: `pause_mode`
+
+One setting chooses how early `pause` comes against how often it comes too
+early, inside the last word. The default is the accurate one.
+
+```python
+vad = VAD(pause_mode="fast")   # "accurate" (default), "balanced" or "fast"
+```
+
+| `pause_mode` | Median lead over Silero | Last `pause` more than 100 ms too early | … more than 200 ms | `pause` followed by more speech, per s |
+|---|---|---|---|---|
+| `"accurate"` (default) | 80 – 88 ms (one speaker: 90 ms) | 1 – 8 % | 0.1 – 3 % | 1.7 – 2.3 |
+| `"balanced"` | 102 – 114 ms (112 ms) | 11 – 17 % | 2 – 7 % | 1.7 – 2.0 |
+| `"fast"` | 116 – 126 ms (130 ms) | 18 – 24 % | 4 – 10 % | 2.0 – 2.2 |
+
+The ranges are the four close-microphone sets of [Results](#results) (read
+sentences at the low end of "too early", meeting headsets at the high end);
+the figure in brackets is the 3,118 one-speaker turns.
+
+- **What `"fast"` costs:** about 40 ms more lead, and in one of five turns the
+  last `pause` comes more than 100 ms before the last word is over, with
+  audible sound of it still to come. Audio cut at that `pause` misses the end
+  of the word. Use it when what you start at `pause` copes with that, or is
+  redone at `end`.
+- **What it does not change:** `start`, `end` and the segment's audio. `end`
+  is where Silero alone ends the segment in every mode, and nothing more is
+  lost or cut. Only the optional `early_end=True` follows the quiet clock and
+  so moves with the mode; that combination ends more segments inside an
+  utterance: with `"fast"` 35 to 41 % of the clips in [Results](#end), against
+  33 to 38 % with `"accurate"` and 31 to 36 % for Silero alone. The segment's
+  `speech_end` is the quiet clock's, so it is early as often as the `pause`.
+- **How it works:** `"accurate"` reports a new `pause` when sound came back
+  after one, so the last one is rarely early. The other two report one
+  `pause` per stretch of speech and count audio as quiet 3 dB (`"balanced"`)
+  or 6 dB (`"fast"`) sooner, so the fading end of a word already counts.
+- **With `resume_events`:** in `"balanced"` and `"fast"` a `resume` comes
+  about 70 ms after sound is back, not 20 ms, because only sound long enough
+  for a new `pause` gives one.
+- **Detailed settings win.** The mode only sets `repause_s`, `quiet_rms`,
+  `floor_margin_db`, `speech_margin_db` and `noise_margin_db`
+  (`RealtimeVAD.vad.PAUSE_MODES`); any of them you pass yourself is used
+  as given.
 
 ## Already using Silero?
 
@@ -198,6 +242,55 @@ per second of speech; it comes a median 50 ms after its `pause` (p90 120 to
 50 ms). In 3 to 9 % of clips a `resume` follows the last `pause` and no new
 `pause` comes before the `end`: the turn then ends with the speculative work
 cancelled, and `end` is the signal to act on.
+
+The three `pause_mode` settings, and the one `pause` per stretch of 0.0.5 at
+today's thresholds (`repause_s=None`), on the same clips and turns:
+
+| | LibriSpeech clean | LibriSpeech other | AMI headset, alone | AMI headset, others talking | one speaker, 3,118 turns |
+|---|---|---|---|---|---|
+| **Median lead over Silero** | | | | | |
+| `"accurate"` | 84 ms | 80 ms | 88 ms | 84 ms | 90 ms |
+| `repause_s=None` | 90 ms | 88 ms | 102 ms | 98 ms | 102 ms |
+| `"balanced"` | 104 ms | 102 ms | 112 ms | 114 ms | 112 ms |
+| `"fast"` | 120 ms | 116 ms | 124 ms | 126 ms | 130 ms |
+| **Earlier than Silero in** | | | | | |
+| `"accurate"` | 83 % | 83 % | 79 % | 67 % | 90 % |
+| `repause_s=None` | 89 % | 88 % | 85 % | 75 % | 98 % |
+| `"balanced"` | 94 % | 92 % | 88 % | 82 % | 98 % |
+| `"fast"` | 96 % | 94 % | 91 % | 87 % | 98 % |
+| **Last `pause` too early** (more than 100 ms, sound to come) | | | | | |
+| `"accurate"` | 2.2 % | 1.3 % | 5.7 % | 8.4 % | – |
+| `repause_s=None` | 8.0 % | 6.8 % | 11.4 % | 12.4 % | – |
+| `"balanced"` | 13.9 % | 11.3 % | 13.8 % | 17.0 % | – |
+| `"fast"` | 23.5 % | 17.6 % | 20.1 % | 21.1 % | – |
+| **… more than 200 ms before the end of the word** | | | | | |
+| `"accurate"` | 0.1 % | 0.1 % | 1.6 % | 3.1 % | – |
+| `repause_s=None` | 1.6 % | 0.8 % | 3.8 % | 4.5 % | – |
+| `"balanced"` | 2.8 % | 1.7 % | 6.8 % | 6.8 % | – |
+| `"fast"` | 5.5 % | 3.6 % | 9.8 % | 8.8 % | – |
+| **`pause` followed by more speech, per s** | | | | | |
+| `"accurate"` | 1.97 | 1.70 | 2.16 | 2.28 | 1.86 |
+| `repause_s=None` | 1.66 | 1.44 | 1.74 | 1.83 | 1.38 |
+| `"balanced"` | 1.94 | 1.74 | 1.92 | 1.99 | 1.57 |
+| `"fast"` | 2.23 | 2.03 | 2.06 | 2.12 | 1.65 |
+
+- The one-speaker turns have no word timings, so "too early" cannot be
+  counted there.
+- All of the lead that the default gave up after 0.0.5 went to the repeated
+  `pause`: with `repause_s=None` the lead is that of 0.0.5 or 2 ms more. The
+  noise subtraction and the DC fix cost none.
+- The lead of the faster modes is partly the same thing as their price: a
+  `pause` inside the last word is early against Silero too.
+- Where noise or a phone line has taken lead away, the faster modes bring
+  some back: at −47 dBFS in room noise 84 ms (earlier than Silero in 75 %)
+  with `"accurate"`, 104 ms (82 %) with `"balanced"`, 130 ms (93 %) with
+  `"fast"`; on the phone line at −38 dBFS 92, 134 and 152 ms.
+- Ends while the speaker goes on, lost speech and missed starts are the same
+  as with Silero alone in all three modes, on every row above and on the
+  quiet, noisy and phone-line turns.
+- A `resume` comes a median 110 to 130 ms after its `pause` in `"balanced"`
+  and `"fast"` (50 ms in `"accurate"`), and takes back 89 to 95 % of the
+  pauses that were followed by more speech in every mode.
 
 ### `end`
 
@@ -354,6 +447,7 @@ What to set:
 | you would rather keep the old fixed floor | `VAD(floor_margin_db=None)` |
 | soft starts open segments you don't want (background voices) | `VAD(soft_start_s=None)` |
 | you want the `end` sooner and accept more ends inside an utterance | `VAD(early_end=True)` |
+| you want `pause` earlier and accept that it is more often inside the last word | `VAD(pause_mode="balanced")` or `"fast"`, see [above](#earlier-or-more-accurate-pause_mode) |
 | you want one `pause` per stretch of speech, as in 0.0.5 | `VAD(repause_s=None)` |
 | you want Silero only, no quiet clock at all | `VAD(quiet_rms=0)` |
 | you want the level threshold only, as in 0.0.5 | `VAD(noise_subtract_db=None)` |

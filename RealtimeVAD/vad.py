@@ -80,6 +80,24 @@ class Event:
     frame: Optional[Frame] = None  # set on "frame"
 
 
+class _ByMode:
+    def __repr__(self) -> str:
+        return "<set by pause_mode>"
+
+
+_MODE = _ByMode()
+# How early "pause" comes against how often it is too early (inside the last word). One choice
+# sets the parameters below; each of them still wins when given. Measured in README.md.
+#   accurate  a "pause" is repeated when sound came back, so the last one is rarely early
+#   balanced  one "pause" per stretch of speech, and audio counts as quiet 3 dB sooner
+#   fast      the same, 6 dB sooner
+PAUSE_MODES = {
+    "accurate": dict(repause_s=0.02, quiet_rms=0.002, floor_margin_db=20.0, speech_margin_db=15.0, noise_margin_db=15.0),
+    "balanced": dict(repause_s=None, quiet_rms=0.0028, floor_margin_db=17.0, speech_margin_db=12.0, noise_margin_db=18.0),
+    "fast": dict(repause_s=None, quiet_rms=0.004, floor_margin_db=14.0, speech_margin_db=9.0, noise_margin_db=21.0),
+}
+
+
 def _frames(seconds: float) -> int:
     return math.ceil(seconds / FRAME_S - EPS)
 
@@ -110,10 +128,11 @@ class VAD:
         early_end: bool = False,  # the quiet clock may end a segment before Silero's count does
         quiet_end_s: Optional[float] = None,  # ...after this much quiet; default end_s
         noisy_extra_s: float = 0.04,  # ...plus this when room noise has raised the quiet threshold
-        quiet_rms: float = 0.002,
-        noise_margin_db: float = 15.0,
-        speech_margin_db: float = 15.0,
-        floor_margin_db: Optional[float] = 20.0,  # quiet input: quiet_rms drops to this far below the speaker; None = fixed
+        pause_mode: str = "accurate",  # or "balanced", "fast": an earlier "pause" that is more often too early (PAUSE_MODES)
+        quiet_rms: float = _MODE,  # accurate: 0.002
+        noise_margin_db: float = _MODE,  # accurate: 15
+        speech_margin_db: float = _MODE,  # accurate: 15
+        floor_margin_db: Optional[float] = _MODE,  # accurate: 20. Quiet input: quiet_rms drops to this far below the speaker; None = fixed
         noise_subtract_db: Optional[float] = 4.0,  # steady noise near the speaker: subtract the room's spectrum, this far over-estimated; None = off
         preroll_s: float = 0.30,
         lookback_s: float = 1.0,
@@ -126,7 +145,7 @@ class VAD:
         resume_events: bool = False,  # "resume" when the speech went on after a "pause"
         confirm_threshold: Optional[float] = None,  # each frame of the start debounce; default continue_threshold
         rearm_s: Optional[float] = None,  # sound that re-arms the quiet clock; default start_s
-        repause_s: Optional[float] = 0.02,  # sound after a "pause" that lets the next quiet block report a new one; None = off
+        repause_s: Optional[float] = _MODE,  # accurate: 0.02. Sound after a "pause" that lets the next quiet block report a new one; None = off
         repause_room_db: float = 6.0,  # ...counted only this far above the learned room noise
         soft_start_s: Optional[float] = 0.128,  # a start also after this long at soft_start_threshold; None = off
         soft_start_threshold: float = 0.5,
@@ -138,6 +157,18 @@ class VAD:
             from .silero import Silero
 
             probability = Silero(restore_s=0)  # restores are decided here, from audio evidence
+        # pause_mode chooses how early "pause" comes: it only sets the five parameters in
+        # PAUSE_MODES, and one given here wins. It changes "pause" (and "resume", and the
+        # speech_end a segment reports), never "start" or the default "end".
+        if pause_mode not in PAUSE_MODES:
+            raise ValueError(f"pause_mode must be one of {', '.join(PAUSE_MODES)}, not {pause_mode!r}")
+        mode = PAUSE_MODES[pause_mode]
+        self.pause_mode = pause_mode
+        quiet_rms = mode["quiet_rms"] if quiet_rms is _MODE else quiet_rms
+        noise_margin_db = mode["noise_margin_db"] if noise_margin_db is _MODE else noise_margin_db
+        speech_margin_db = mode["speech_margin_db"] if speech_margin_db is _MODE else speech_margin_db
+        floor_margin_db = mode["floor_margin_db"] if floor_margin_db is _MODE else floor_margin_db
+        repause_s = mode["repause_s"] if repause_s is _MODE else repause_s
         self._p = probability
         self._extend = extend
         self._frame_events = frame_events
