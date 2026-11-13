@@ -147,6 +147,7 @@ class VAD:
         rearm_s: Optional[float] = None,  # sound that re-arms the quiet clock; default start_s
         repause_s: Optional[float] = _MODE,  # accurate: 0.02. Sound after a "pause" that lets the next quiet block report a new one; None = off
         repause_room_db: float = 6.0,  # ...counted only this far above the learned room noise
+        repause_lag_s: Optional[float] = 0.128,  # ...and only while Silero's own silence is no longer than this; None = always
         soft_start_s: Optional[float] = 0.128,  # a start also after this long at soft_start_threshold; None = off
         soft_start_threshold: float = 0.5,
         normalize_to_dbfs: Optional[float] = None,  # quiet input: amplify what Silero sees up to this speech level (try -30)
@@ -234,6 +235,14 @@ class VAD:
         # the quiet threshold and repause_room_db above the room (not the room's own flutter)
         # lets the restarted count report a new "pause": the latest one is the best estimate.
         self.repause_s, self.repause_room_db = repause_s, repause_room_db
+        # Sound counts for this only while Silero still takes the audio for speech, or has just
+        # stopped: its probability lags the audio by about 0.1 s, which is what lets a dip
+        # inside the last word be reported at all. Once its silence has run longer than that,
+        # sound it does not score as speech (a breath, a click, a door in the trailing silence)
+        # takes nothing back: the standing "pause" remains the last one and no "resume" comes.
+        # A voiced frame starts Silero's count over, so real speech reopens all of it.
+        self.repause_lag_s = repause_lag_s
+        self._repause_lag_n = None if repause_lag_s is None else _frames(repause_lag_s)
         self._repause_n = 0 if repause_s is None else max(1, math.ceil(repause_s * SAMPLE_RATE / BLOCK - 1e-9))
         self._restore_n = _frames(restore_s) if restore_s > 0 else 0
         self._deaf_n = _frames(deaf_s) if deaf_s > 0 and restore_s > 0 else 0
@@ -415,16 +424,19 @@ class VAD:
             else:
                 self._unbroken = False
                 self._loud += BLOCK
-                if self._repause_n and not self._again:
+                heard = self._repause_lag_n is None or self._silent <= self._repause_lag_n
+                if self._repause_n and not self._again and heard:
                     n = self._noise_db
                     if n is None or power >= 10.0 ** ((n + self.repause_room_db) / 10.0):
                         self._clear += 1
                         self._again = self._clear >= self._repause_n
                         self._resume_due = self._again
                 if self._loud >= self._rearm_samples:
-                    self._t_quiet, self._loud, self._paused, self._resumed = None, 0, False, False
-                    self._resume_due = True
+                    self._t_quiet, self._loud, self._resumed = None, 0, False
                     self._again = False
+                    if heard:  # sound in the trailing silence takes nothing back
+                        self._paused = False
+                        self._resume_due = True
         return quiet
 
     def _block_end(self, quiet: bool, t: float, events: list[Event]) -> None:

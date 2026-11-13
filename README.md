@@ -16,9 +16,9 @@ speaker's own level. The moment the audio goes quiet you get a `pause` event,
 before Silero's probability has fallen. You start the answer on `pause` and
 cancel it if the speaker goes on.
 
-- **Earlier:** `pause` comes a median 90 ms before Silero's probability drops, and 238 ms before Silero's `VADIterator` reports the end (3,118 real voice-assistant turns, one speaker).
+- **Earlier:** `pause` comes a median 92 ms before Silero's probability drops, and 238 ms before Silero's `VADIterator` reports the end (3,118 real voice-assistant turns, one speaker).
 - **Or faster:** `pause_mode="fast"` leads by 130 ms on the same turns and more often fires inside the last word ([your choice](#earlier-or-more-accurate-pause_mode)).
-- **Other speakers:** 80 to 88 ms on 6,600 close-microphone clips from 214 speakers, without noise suppression.
+- **Other speakers:** 82 to 90 ms on 6,600 close-microphone clips from 214 speakers, without noise suppression.
 - **Quiet, noisy and phone input:** 84 to 122 ms on quiet speech, steady room noise and a phone line (simulated from the same turns).
 - **Nothing lost at the end:** `end` comes exactly where Silero alone puts it. No turn is cut that Silero would not cut.
 - **Small:** one CPU thread, about 8 ms per second of audio. Needs only numpy and onnxruntime; the Silero model is bundled, no torch.
@@ -118,10 +118,11 @@ Input is 16 kHz mono audio as float32, int16 or int16 bytes.
 short gap between words and every stop consonant.
 
 - **Start work you can cancel:** finalize the transcript, call the LLM, prepare the voice output.
-- **Cancel at `resume`.** It comes 20 ms after sound is back, a median 50 ms after its `pause`, and takes back 91 to 95 % of the pauses that were followed by more speech.
+- **Cancel at `resume`.** It comes 20 ms after sound is back, a median 50 ms after its `pause`, and takes back 90 to 95 % of the pauses that were followed by more speech.
 - **Redo at the next `pause`; the latest one counts.** A `pause` can come inside the last word, when the level dips before a final consonant. The next quiet gives a new `pause` with more audio. Drop the older result.
 - **Never treat `pause` as the end of the turn.** Only `end` closes a segment.
-- **Keep `end` as the fallback.** In 3 to 9 % of clips the last `pause` is taken back by a `resume` and no new one comes before the `end`. Then `end` is the signal to act on.
+- **Keep `end` as the fallback.** In 1 to 4 % of clips the last `pause` is taken back by a `resume` and no new one comes before the `end`. Then `end` is the signal to act on.
+- **Sound after the speech takes nothing back.** Once Silero has been counting silence longer than its lag, a breath or a click gives no new `pause` and no `resume`: the standing `pause` stays the last one.
 
 ## Earlier or more accurate: `pause_mode`
 
@@ -134,9 +135,9 @@ vad = VAD(pause_mode="fast")   # "accurate" (default), "balanced" or "fast"
 
 | `pause_mode` | Median lead over Silero | Last `pause` more than 100 ms too early | … more than 200 ms | `pause` followed by more speech, per s |
 |---|---|---|---|---|
-| `"accurate"` (default) | 80 – 88 ms (one speaker: 90 ms) | 1 – 8 % | 0.1 – 3 % | 1.7 – 2.3 |
+| `"accurate"` (default) | 82 – 90 ms (one speaker: 92 ms) | 1 – 9 % | 0.1 – 3 % | 1.7 – 2.2 |
 | `"balanced"` | 102 – 114 ms (112 ms) | 11 – 17 % | 2 – 7 % | 1.7 – 2.0 |
-| `"fast"` | 116 – 126 ms (130 ms) | 18 – 24 % | 4 – 10 % | 2.0 – 2.2 |
+| `"fast"` | 118 – 126 ms (130 ms) | 18 – 24 % | 4 – 10 % | 2.0 – 2.2 |
 
 The ranges cover four close-microphone sets from 214 speakers; the figure in
 brackets is the 3,118 one-speaker turns.
@@ -183,7 +184,7 @@ earlier behaviour is still there as a setting.
 
 - **It is a signal for speculative pipelines only.** Without fast cancelling it gives you Silero's result with more events to ignore.
 - **No lead on a distant microphone or in loud noise.** See the table in [Is it for you?](#is-it-for-you).
-- **Earlier is not the same as correct.** The last `pause` is more than 100 ms early in 1 to 2 % of read sentences and 6 to 8 % of meeting clips, with audible sound of the last word still to come. Silero's own speech-off is that early in 0.2 to 0.3 % of read sentences: it is late, and rarely early.
+- **Earlier is not the same as correct.** The last `pause` is more than 100 ms early in 1 to 2 % of read sentences and 6 to 9 % of meeting clips, with audible sound of the last word still to come. Silero's own speech-off is that early in 0.2 to 0.3 % of read sentences: it is late, and rarely early.
 - **`end` has no lead.** It is Silero's end. `VAD(early_end=True)` ends a median 16 to 70 ms sooner and ends more segments inside an utterance (2 to 3 points more clips).
 - **Silero's limits remain.** Whisper is mostly not detected. Laughter, coughs and sneezes often are. Very quiet and narrowband speech makes Silero unsure, and RealtimeVAD with it.
 - **16 kHz mono only.** For 8 kHz audio without resampling, use Silero.
