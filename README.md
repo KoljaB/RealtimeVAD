@@ -226,7 +226,7 @@ for the early signal.
 
 ## Frameworks
 
-- **LiveKit Agents:** [livekit-plugins-realtimevad/](https://github.com/KoljaB/RealtimeVAD/blob/main/livekit-plugins-realtimevad/README.md) is a VAD plugin plus a wrapper that starts LiveKit's preemptive generation at `pause`. LiveKit alone starts it only on a final transcript. With the wrapper the first agent audio came 120 to 139 ms sooner than with Silero in the same wrapper on Whisper, 56 to 88 ms on a streaming recognizer, and 0 ms with a 0.1 s LLM.
+- **LiveKit Agents:** [livekit-plugins-realtimevad/](https://github.com/KoljaB/RealtimeVAD/blob/main/livekit-plugins-realtimevad/README.md) is a VAD plugin plus a wrapper that starts LiveKit's preemptive generation at `pause`. LiveKit alone starts it only on a final transcript. With the wrapper the first agent audio came 120 ms sooner than with Silero in the same wrapper on Whisper, 56 ms on a streaming recognizer, and 0 ms with a 0.1 s LLM (at the wrapper's default `pause` of 0.15 s).
 - **Pipecat:** not supported. Its speech recognizers finalize only when the VAD reports the stop, so nothing can start at `pause` ([issue 4](https://github.com/KoljaB/RealtimeVAD/issues/4)).
 
 ## Development
