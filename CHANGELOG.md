@@ -23,6 +23,13 @@ tables: [README](README.md), [docs/results.md](docs/results.md).
 
 ### New
 
+- **A short first word is kept with a long `start_s`.** With `start_s` raised
+  to reject clicks (the demo uses 0.32 s), a short "Hey" before more speech
+  did not last long enough and the segment began at the second word. The
+  start now reaches back to speech of 64 ms or more that stopped less than
+  `end_s` before, and the audio keeps its 0.3 s of pre-roll in front. A short
+  sound that stands alone still starts nothing. Nothing changes with the
+  default `start_s`.
 - **`pause_mode`:** `"accurate"` (default), `"balanced"` or `"fast"`. `"fast"`
   leads Silero by 118 to 130 ms and puts about one in five last pauses inside
   the last word.

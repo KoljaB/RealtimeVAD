@@ -18,6 +18,7 @@ FRAME_S = FRAME / SAMPLE_RATE
 EPS = 1e-9
 LEVEL_S = 3.0  # the speaker's level is the median of the segment's last 3 s of speech frames...
 LEVEL_MIN_S = 0.25  # ...once it has this much; until then the previous segment's level counts
+FIRST_WORD_FRAMES = 2  # speech this long (64 ms, the default start_s) before a start belongs to it
 SOFT_OVER_DB = 10.0  # a soft start must be this far above the idle floor (steady noise Silero is unsure about is not)
 # Levels (the quiet clock's blocks, the speaker's and the room's level) are measured behind a
 # one-pole 20 Hz high-pass, so a DC offset in the input is not mistaken for sound.
@@ -287,6 +288,7 @@ class VAD:
         self._in_speech = False
         self._idle = 0
         self._streak = 0
+        self._tried: Optional[tuple] = None  # (first, last idle frame) of speech that did not last start_s
         self._lookback_s = 0.0
         self._clear_segment()
 
@@ -310,7 +312,7 @@ class VAD:
 
     @property
     def onset_lookback_s(self) -> float:
-        """How far the latest start was moved back over a soft opening."""
+        """How far the latest start was moved back, over a soft opening or a short first word."""
         return self._lookback_s
 
     @property
@@ -641,6 +643,11 @@ class VAD:
             else:
                 self._floor = floor + min(level - floor, 3.0 * FRAME_S)
         self._idle += 1
+        if self._streak >= FIRST_WORD_FRAMES and not voiced:  # speech that did not last start_s
+            first, last = self._idle - self._streak, self._idle - 1
+            if self._tried is not None and first - self._tried[1] <= self._end_frames:
+                first = self._tried[0]  # one stretch with the one before
+            self._tried = (first, last)
         self._streak = self._streak + 1 if voiced else 0
         self._peak = max(self._peak, p) if voiced else 0.0
         self._soft = self._soft + 1 if soft else 0
@@ -654,8 +661,11 @@ class VAD:
                 events.append(Event("onset", t))  # no confident frame came: the onset is the start
             self._streak, self._soft_segment = self._soft, True
             self._peak = max(self._peak, p)
-        lookback = self._lookback(floor)
-        keep = self._preroll_n if not lookback else max(self._preroll_n, min(self._preroll_n + lookback, self._idle))
+        lookback = max(self._lookback(floor), self._first_word())
+        # the audio begins as long before the speech as with the default start_s, however long
+        # a longer start_s takes to confirm (preroll_s is counted back from the confirmation)
+        preroll = self._preroll_n + max(0, self._start_frames - FIRST_WORD_FRAMES)
+        keep = preroll if not lookback else max(preroll, min(preroll + lookback, self._idle))
         self._in_speech = True
         self._audio = [f for f, _, _ in list(self._history)[-keep:]]
         self._start = t - (self._streak - 1 + lookback) * FRAME_S  # end of first streak frame, as in Miep
@@ -666,6 +676,27 @@ class VAD:
         for _, past, _ in list(self._history)[-self._streak:]:
             self._learn_level(past)
         events.append(Event("start", self._start))
+
+    def _first_word(self) -> int:
+        """Frames before the start streak back to a short first word ("Hey. What's up").
+
+        With a long start_s a short word does not last long enough to start a segment, and the
+        start would come at the second word. Speech of at least 64 ms (what the default
+        start_s asks for) that stopped less than end_s before the start streak began belongs
+        to the segment: with the default start_s it would have started it, and the pause
+        after it would not have ended it. A sound that stands alone still starts nothing.
+        """
+        h, s = self._history, self._streak
+        if self._tried is None:
+            return 0
+        first, last = self._tried
+        begin = self._idle - s + 1  # first frame of the start streak
+        back = begin - first
+        if begin - last > self._end_frames or back > len(h) - s:
+            return 0
+        if any(h[-(s + step)][2] for step in range(1, back + 1)):  # never over the assistant's own voice
+            return 0
+        return back
 
     def _lookback(self, floor: Optional[float]) -> int:
         """Frames before the start streak that still belong to a soft opening."""
@@ -729,6 +760,7 @@ class VAD:
             self._shadow_soft = self._soft_segment  # the segment Silero alone is still in
         self._shadow = self._silent if early else None  # Silero's count, carried on
         self._idle = self._streak = self._soft = 0
+        self._tried = None
         self._clear_segment()
         events.append(Event("end", t, segment))
 

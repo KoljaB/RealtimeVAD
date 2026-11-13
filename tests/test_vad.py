@@ -275,6 +275,59 @@ def test_bundled_silero_on_silence():
     assert not vad.in_speech
 
 
+SLOW = {"start_s": 0.32, "confirm_threshold": 0.8}  # a start needs 10 frames: clicks and knocks start nothing
+HEY = [(20, 0.0, 1e-4), (6, 0.95, 0.1)]  # 0.19 s of speech from frame 20 on: too short to start
+
+
+def test_short_first_word_belongs_to_the_segment_that_follows():
+    """ "Hey. What's up": with a long start_s the start reaches back to the "Hey"."""
+    ev = run(HEY + [(3, 0.1, 1e-4), (12, 0.95, 0.1)], **SLOW)
+    assert kinds(ev) == ["start"]
+    assert ev[0].time == pytest.approx(21 * F)  # the first frame of the short word
+    ev = run(HEY + [(3, 0.1, 1e-4), (12, 0.95, 0.1), (12, 0.1, 0.05)], **SLOW)
+    assert len(ev[-1].segment.audio) == (8 + 6 + 3 + 12 + 8) * FRAME  # pre-roll, word, gap, speech, Silero's count
+
+
+def test_short_sound_alone_starts_nothing():
+    assert run(HEY + [(30, 0.0, 1e-4)], **SLOW) == []
+
+
+def test_first_word_is_not_kept_over_a_gap_that_would_have_ended_it():
+    ev = run(HEY + [(7, 0.1, 1e-4), (12, 0.95, 0.1)], **SLOW)  # 7 silent frames: one short of end_s
+    assert ev[0].time == pytest.approx(21 * F)
+    ev = run(HEY + [(8, 0.1, 1e-4), (12, 0.95, 0.1)], **SLOW)  # end_s of silence: two utterances
+    assert ev[0].time == pytest.approx(35 * F)
+
+
+def test_one_frame_before_the_speech_is_not_a_first_word():
+    # a click 0.16 s before the speech (closer than 0.1 s, the look-back over a soft opening keeps it)
+    ev = run([(20, 0.0, 1e-4), (1, 0.95, 0.1), (5, 0.1, 1e-4), (12, 0.95, 0.1)], **SLOW)
+    assert ev[0].time == pytest.approx(27 * F)
+    ev = run([(20, 0.0, 1e-4), (1, 0.95, 0.1), (5, 0.1, 1e-4), (2, 0.95, 0.1)])  # and with the default start_s
+    assert ev[0].time == pytest.approx(27 * F)
+
+
+def test_two_short_words_before_the_speech_are_both_kept():
+    ev = run(HEY + [(3, 0.1, 1e-4), (4, 0.95, 0.1), (3, 0.1, 1e-4), (12, 0.95, 0.1)], **SLOW)
+    assert ev[0].time == pytest.approx(21 * F)
+
+
+def test_first_word_is_never_taken_from_the_assistants_own_voice():
+    probs = [0.0] * 20 + [0.95] * 6 + [0.1] * 3 + [0.95] * 12
+    vad = VAD(probability=scripted(probs), **SLOW)
+    vad.feed(level(20 * FRAME, 1e-4))
+    vad.feed(level(6 * FRAME, 0.1), playback=True)
+    ev = vad.feed(np.concatenate((level(3 * FRAME, 1e-4), level(12 * FRAME, 0.1))))
+    assert kinds(ev) == ["start"]
+    assert ev[0].time == pytest.approx(30 * F)
+
+
+def test_audio_begins_before_the_speech_with_a_long_start_too():
+    ev = run([(20, 0.0, 1e-4), (12, 0.95, 0.1), (12, 0.1, 0.05)], **SLOW)
+    assert ev[0].time == pytest.approx(21 * F)
+    assert len(ev[-1].segment.audio) == (8 + 12 + 8) * FRAME  # 8 frames of pre-roll, as with the default start_s
+
+
 def test_audio_so_far_covers_everything_fed_since_preroll():
     probs = [0.0] * 20 + [0.95] * 2 + [0.9] * 20
     signal = level(42 * FRAME, 0.1)
