@@ -2,7 +2,7 @@
 
 *An early "the speaker stopped" signal for voice assistants: 92 ms before Silero by default, 130 ms in fast mode, on a close microphone. None on a distant one.*
 
-[RealtimeSTT](https://github.com/KoljaB/RealtimeSTT) · [RealtimeTTS](https://github.com/KoljaB/RealtimeTTS) · [Live demo](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) · [Results](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md) · [Quiet and noisy input](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md) · [Spec](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md) · [LiveKit plugin](https://github.com/KoljaB/RealtimeVAD/blob/main/livekit-plugins-realtimevad/README.md)
+[RealtimeSTT](https://github.com/KoljaB/RealtimeSTT) · [RealtimeTTS](https://github.com/KoljaB/RealtimeTTS) · [Live demo](demo/README.md) · [Results](docs/results.md) · [Quiet and noisy input](docs/quiet-and-noisy-input.md) · [Spec](SPEC.md) · [LiveKit plugin](livekit-plugins-realtimevad/README.md)
 
 A voice assistant can't answer until it knows the user has stopped talking.
 Speech recognition, the LLM call and the voice output all wait for that one
@@ -70,7 +70,7 @@ https://github.com/user-attachments/assets/d01900dd-9601-4f3d-8c88-db55e8bc83a1
 
 The video was recorded with 0.0.5 and a synthetic voice and shows a median lead of 92 ms.
 
-[demo/](https://github.com/KoljaB/RealtimeVAD/blob/main/demo/README.md) runs
+[demo/](demo/README.md) runs
 this page on your own microphone. It shows, turn by turn, how much sooner
 RealtimeVAD knew that you stopped than Silero alone, on the same audio. It is
 the quickest way to see what your microphone and room give you.
@@ -112,7 +112,7 @@ Input is 16 kHz mono audio as float32, int16 or int16 bytes.
 - **Audio:** `vad.audio()` returns the running segment at any time, starting about 0.3 s before the speech.
 - **`end`** carries the finished segment with its audio, start time, end time and the time the speech stopped.
 - **Assistant talking:** pass `vad.feed(chunk, playback=True)` for chunks recorded while your assistant speaks, so its own voice is handled as possible echo.
-- **Guarantees:** [SPEC.md](https://github.com/KoljaB/RealtimeVAD/blob/main/SPEC.md) lists what is guaranteed and every setting.
+- **Guarantees:** [SPEC.md](SPEC.md) lists what is guaranteed and every setting.
 
 ## How to use `pause`
 
@@ -148,7 +148,7 @@ brackets is the 3,153 one-speaker turns.
 - **When to use it:** when what you start at `pause` copes with a missing word ending, or is redone at `end`.
 - **What stays the same:** `start`, `end` and the segment's audio, in every mode.
 
-Details and the full table: [results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md#speech-off-pause).
+Details and the full table: [results.md](docs/results.md#speech-off-pause).
 
 ## Results
 
@@ -161,8 +161,8 @@ Details and the full table: [results.md](https://github.com/KoljaB/RealtimeVAD/b
 | All 7,080 clips and all quiet, noisy and phone rows: `end` | same as Silero alone, never later |
 | CPU, one thread, Silero included | 8.3 ms per second of audio |
 
-- **Everything else:** [docs/results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md) has the full tables, the comparison with 0.0.5 and the `early_end` option.
-- **Quiet, noisy, phone:** [docs/quiet-and-noisy-input.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md) has every level and line we measured, backchannels and DC offset.
+- **Everything else:** [docs/results.md](docs/results.md) has the full tables, the comparison with 0.0.5 and the `early_end` option.
+- **Quiet, noisy, phone:** [docs/quiet-and-noisy-input.md](docs/quiet-and-noisy-input.md) has every level and line we measured, backchannels and DC offset.
 - **Your own audio:** `python benchmarks/speech_off_lead.py <wav dir> out.json` measures the lead on 16 kHz mono WAVs, one turn each, with trailing silence.
 
 ### Why the headline number changed
@@ -180,7 +180,7 @@ earlier behaviour is still there as a setting.
 | now, `pause_mode="fast"` | 130 ms | Earlier than any release so far, at the price in the table above |
 
 - **The first `pause` of a turn comes as early as before.** The number fell because the benchmark measures the last one, which is now the later, better one.
-- **Not the same turns each time.** The set grew and was filtered differently (3,238, 3,279, 3,118 and now 3,153 turns), so the step from 110 to 100 ms is not attributed to one change; the step from 100 to 92 ms is, see [results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md#speech-off-pause).
+- **Not the same turns each time.** The set grew and was filtered differently (3,238, 3,279, 3,118 and now 3,153 turns), so the step from 110 to 100 ms is not attributed to one change; the step from 100 to 92 ms is, see [results.md](docs/results.md#speech-off-pause).
 - \* The `repause_s=None` figure was measured on the 3,118 turns, before sound in the trailing silence stopped repeating a `pause`. The 0.0.4 and 0.0.5 rows are what those releases published.
 
 ## Limits
@@ -206,7 +206,7 @@ earlier behaviour is still there as a setting.
 | soft starts open segments you don't want (background voices) | `VAD(soft_start_s=None)` |
 | you want Silero only, no quiet clock at all | `VAD(quiet_rms=0)` |
 
-More settings and what each one costs: [quiet-and-noisy-input.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md#steady-noise-close-under-the-speaker-after-005).
+More settings and what each one costs: [quiet-and-noisy-input.md](docs/quiet-and-noisy-input.md#steady-noise-close-under-the-speaker-after-005).
 
 ## Already using Silero?
 
@@ -230,7 +230,7 @@ for the early signal.
 
 ## Frameworks
 
-- **LiveKit Agents:** [livekit-plugins-realtimevad/](https://github.com/KoljaB/RealtimeVAD/blob/main/livekit-plugins-realtimevad/README.md) is a VAD plugin plus a wrapper that starts LiveKit's preemptive generation at `pause`. LiveKit alone starts it only on a final transcript. With the wrapper the first agent audio came 120 ms sooner than with Silero in the same wrapper on Whisper, 56 ms on a streaming recognizer, and 0 ms with a 0.1 s LLM (at the wrapper's default `pause` of 0.15 s).
+- **LiveKit Agents:** [livekit-plugins-realtimevad/](livekit-plugins-realtimevad/README.md) is a VAD plugin plus a wrapper that starts LiveKit's preemptive generation at `pause`. LiveKit alone starts it only on a final transcript. With the wrapper the first agent audio came 120 ms sooner than with Silero in the same wrapper on Whisper, 56 ms on a streaming recognizer, and 0 ms with a 0.1 s LLM (at the wrapper's default `pause` of 0.15 s).
 - **Pipecat:** not supported. Its speech recognizers finalize only when the VAD reports the stop, so nothing can start at `pause` ([issue 4](https://github.com/KoljaB/RealtimeVAD/issues/4)).
 
 ## Development
@@ -253,8 +253,8 @@ pytest tests/audio
 
 They take about 10 s with 8 worker processes and print what each test guards,
 with the measured value and its limit. Sources and licenses:
-[LICENSES-audio.md](https://github.com/KoljaB/RealtimeVAD/blob/main/tests/audio/LICENSES-audio.md),
-[LICENSES-backchannels.md](https://github.com/KoljaB/RealtimeVAD/blob/main/tests/audio/LICENSES-backchannels.md).
+[LICENSES-audio.md](tests/audio/LICENSES-audio.md),
+[LICENSES-backchannels.md](tests/audio/LICENSES-backchannels.md).
 
 ## License and credits
 
