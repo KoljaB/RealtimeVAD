@@ -1,6 +1,8 @@
 # Publishing the plugin
 
-Not published yet ([#5](https://github.com/KoljaB/RealtimeVAD/issues/5)). This is what was checked and what is left to decide.
+Published: [livekit-plugins-realtimevad 0.1.0](https://pypi.org/project/livekit-plugins-realtimevad/0.1.0/)
+on 2026-11-13, built from commit 4e1fafc, after `realtimevad` 0.1.0 ([#5](https://github.com/KoljaB/RealtimeVAD/issues/5)).
+This is how a release of the plugin is built, checked and uploaded.
 
 ## Build and check
 
@@ -15,62 +17,40 @@ Then in a fresh virtual environment, against `realtimevad` from PyPI:
 
 ```bash
 pip install dist/livekit_plugins_realtimevad-<version>-py3-none-any.whl pytest pytest-asyncio
-pytest tests                    # from a folder that holds only tests/ and no livekit/ directory
+pytest -o asyncio_mode=auto tests   # from a folder that holds only tests/ and no livekit/ directory
 ```
+
+`-o asyncio_mode=auto` stands in for the setting in `pyproject.toml`, which that folder does not
+have; without it every test fails with "async def functions are not natively supported".
+`twine check` needs twine 7 or newer: hatchling writes metadata version 2.5, which twine 6 rejects.
+For 0.1.0 this gave 29 passed against `realtimevad` 0.1.0 from PyPI.
 
 The wheel holds `livekit/plugins/realtimevad/` (six files) and the license. The sdist adds
 `tests/`, `README.md` and `pyproject.toml`. The benchmarks are not packaged: they need the
 repository's test audio and a checkout of livekit/agents.
 
-The version comes from `livekit/plugins/realtimevad/version.py`: 0.1.0 for the first upload, the
+The version comes from `livekit/plugins/realtimevad/version.py`. 0.1.0 was the first upload, the
 same number as the RealtimeVAD release it needs (`realtimevad>=0.1.0`). The two are versioned
-separately after that. Upload RealtimeVAD 0.1.0 first: the fresh-environment check above installs
-it from PyPI, and the plugin refuses to load an older core's options (`pause_mode`).
+separately after that. When a plugin release needs a new core, upload the core first: the
+fresh-environment check above installs it from PyPI.
 
-Before the upload:
+Before an upload:
 
-- The README says "not on PyPI yet" and installs from a checkout: change both to
-  `pip install livekit-plugins-realtimevad` (or the other name, below).
+- `dist/` in this folder may hold builds of an older version (it is git-ignored): delete it first,
+  or build into a fresh folder (`python -m build --outdir <folder>`).
 - The README's links to `benchmarks/`, `examples/` and `PAUSE.md` are absolute links to the `main`
-  branch on GitHub, because PyPI does not resolve relative ones. They work once the branch is pushed.
-- `dist/` in this folder may hold builds of an older version (it is git-ignored): delete it first.
+  branch on GitHub, because PyPI does not resolve relative ones. Push `main` first.
 
-Upload (`twine upload dist/*`) is the one step not done.
+Then `twine upload <folder>/*`, and compare the SHA-256 values PyPI shows with the local files.
 
 ## The name
 
-`livekit-plugins-realtimevad` follows LiveKit's own naming (`livekit-plugins-silero`, ...) and can
-be taken for an official plugin. `realtimevad-livekit` cannot. Both names were free on PyPI on
-2026-11-13. Only the distribution name is in question; the import path stays
-`livekit.plugins.realtimevad` either way, because that is where LiveKit plugins live and what
-`from livekit.plugins import realtimevad` needs.
+The distribution is called `livekit-plugins-realtimevad`, decided by the author before the first
+upload. It follows LiveKit's own naming (`livekit-plugins-silero`, ...), so people find it where
+they look, and it can be taken for an official plugin: the package description and the README
+say it is a community plugin, not made by LiveKit. The alternative was `realtimevad-livekit`.
+The import path is `livekit.plugins.realtimevad`, because that is where LiveKit plugins live and
+what `from livekit.plugins import realtimevad` needs.
 
-A rename to `realtimevad-livekit` changes:
-
-| What | Now | After |
-|---|---|---|
-| `pyproject.toml`, `[project] name` | `livekit-plugins-realtimevad` | `realtimevad-livekit` |
-| Install command (this README, later the main README) | `pip install livekit-plugins-realtimevad` | `pip install realtimevad-livekit` |
-| File names in `dist/` | `livekit_plugins_realtimevad-0.1.0*` | `realtimevad_livekit-0.1.0*` |
-| What `pip show`, `pip list` and `importlib.metadata` call it | `livekit-plugins-realtimevad` | `realtimevad-livekit` |
-| The text of issue #5 | names the first | names the second |
-
-It does not change:
-
-- the import: `from livekit.plugins import realtimevad`, and `[tool.hatch.build.targets.wheel] packages = ["livekit"]`
-- the plugin registration. `Plugin(__name__, __version__, __package__, logger)` passes the import
-  path `livekit.plugins.realtimevad`; LiveKit uses it to preload the module in its worker
-  processes and in log lines, never to look up the distribution (livekit-agents 1.8.11,
-  `worker.py`, `__main__.py`)
-- the logger name, the tests, the benchmarks
-- the folder `livekit-plugins-realtimevad/` in this repository. It can keep its name; if it is
-  renamed too, the links in the main README (two) and `Documentation` in `pyproject.toml` follow.
-
-Things a different distribution name brings with it:
-
-- People who know LiveKit's plugins will try `pip install livekit-plugins-realtimevad` first. The
-  README's first lines have to carry the install command.
-- `pip install "livekit-agents[silero]"`-style extras exist only for LiveKit's own plugins, under
-  either name.
-- Once a name is on PyPI it cannot be reused for something else, and a renamed project needs a
-  stub release under the old name to redirect people. Deciding before the first upload is free.
+A name on PyPI cannot be reused for something else, and a renamed project needs a stub release
+under the old name to redirect people.
