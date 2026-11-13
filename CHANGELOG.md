@@ -3,7 +3,7 @@
 ## 0.1.0
 
 The product is the early `pause`. `end` is now exactly Silero's end, and
-`pause` got more accurate at the cost of about 10 ms of lead. Numbers and
+`pause` got more accurate at the cost of about 8 ms of lead. Numbers and
 tables: [README](README.md), [docs/results.md](docs/results.md).
 
 ### Changed behaviour
@@ -24,7 +24,7 @@ tables: [README](README.md), [docs/results.md](docs/results.md).
 ### New
 
 - **`pause_mode`:** `"accurate"` (default), `"balanced"` or `"fast"`. `"fast"`
-  leads Silero by 116 to 130 ms and puts about one in five last pauses inside
+  leads Silero by 118 to 130 ms and puts about one in five last pauses inside
   the last word.
 - **`resume` event** (`VAD(resume_events=True)`): the speech went on after a
   `pause`; cancel what you started.

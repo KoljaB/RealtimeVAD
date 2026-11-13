@@ -183,7 +183,7 @@ A pause is often not the end. When speech goes on:
 
 - The request is cancelled if it still runs, and its transcript is never sent.
   The next pause asks again with all the audio so far: the newest pause always
-  replaces an older one. RealtimeVAD (from the release after 0.0.5) reports a
+  replaces an older one. RealtimeVAD (since 0.1.0) reports a
   pause again when sound follows the first; the wrapper asks again only while
   Silero has not counted `pause` of silence itself. A noise after the last word
   does not throw the transcript away (it did in a first version: 4 of 16

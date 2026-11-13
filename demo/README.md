@@ -25,7 +25,7 @@ and press **Play sample**.
 | On the page | Meaning |
 |---|---|
 | **The big number** | How much sooner RealtimeVAD knew you stopped in your last turn. Below it: the median over all turns so far, and in how many of them it was sooner |
-| **Turn end** | How much sooner RealtimeVAD closed the turn. It can be sooner or the same, never later |
+| **Turn end** | How much sooner RealtimeVAD closed the turn. Since 0.1.0 the turn ends where Silero alone ends it, so this shows 0 ms; it is never later |
 | **Early pauses** | Pauses that fired while you kept talking. This is the price of reacting so early |
 | **Yellow dot** | Where RealtimeVAD knows you stopped |
 | **Red dot** | Where Silero alone knows |
@@ -55,8 +55,9 @@ is 8.
 
 ## What to expect
 
-- **The video uses a synthetic voice** and shows a median lead of 92 ms. On
-  real voice-assistant turns the measured median is 110 ms.
+- **The video was recorded with 0.0.5 and a synthetic voice** and shows a
+  median lead of 92 ms. On real voice-assistant turns the measured median of
+  the current version is 92 ms as well.
 - **The lead depends on the voice** and on how each sentence ends.
 - **Noise matters.** The page captures the microphone with the browser's noise
   suppression on, as a voice assistant would. That makes the gaps after words

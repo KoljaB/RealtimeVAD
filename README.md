@@ -54,16 +54,15 @@ settings:
 | Meeting headset, others talking (AMI) | 86 ms | 69 % |
 | Quiet speaker, clean, −38 to −52 dBFS | 100 – 122 ms | 91 – 95 % |
 | Steady room noise 15 dB under the speaker (simulated) | 84 ms | 75 % |
-
-The last two rows are from the run before the trailing-silence rule; with it
-they can only get longer, not shorter.
 | Phone line, −38 to −58 dBFS (simulated) | 92 – 114 ms | 79 – 87 % |
-| **Distant table microphone (AMI)** | **0 ms** | 30 % |
+| **Distant table microphone (AMI)** | **0 ms** | 31 % |
 | **Steady noise within about 11 dB of the speaker** | **none** | – |
 | **Babble, music or street noise close under the speaker** | **expect none** (not measured; the noise subtraction does not apply) | – |
 
 Where there is no lead, RealtimeVAD behaves like Silero alone: correct, and
-no faster.
+no faster. The quiet-speaker, room-noise and phone-line rows were measured
+before the last change to `pause` (sound in the trailing silence no longer
+repeats it); that change can only make their lead equal or longer.
 
 ## Live demo
 
@@ -162,6 +161,10 @@ Details and the full table: [results.md](https://github.com/KoljaB/RealtimeVAD/b
 | All 7,080 clips and all quiet, noisy and phone rows: `end` | same as Silero alone, never later |
 | CPU, one thread, Silero included | 8.3 ms per second of audio |
 
+- **Everything else:** [docs/results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md) has the full tables, the comparison with 0.0.5 and the `early_end` option.
+- **Quiet, noisy, phone:** [docs/quiet-and-noisy-input.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md) has every level and line we measured, backchannels and DC offset.
+- **Your own audio:** `python benchmarks/speech_off_lead.py <wav dir> out.json` measures the lead on 16 kHz mono WAVs, one turn each, with trailing silence.
+
 ### Why the headline number changed
 
 This page said 110 ms at first, then 100 ms, now 92 ms. The detector did not
@@ -178,11 +181,7 @@ earlier behaviour is still there as a setting.
 
 - **The first `pause` of a turn comes as early as before.** The number fell because the benchmark measures the last one, which is now the later, better one.
 - **Not the same turns each time.** The set grew and was filtered differently (3,238, 3,279, 3,118 and now 3,153 turns), so the step from 110 to 100 ms is not attributed to one change; the step from 100 to 92 ms is, see [results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md#speech-off-pause).
-- \* The `repause_s=None` figure was measured before the trailing-silence rule and without it; every other row in this section is from the current default.
-
-- **Everything else:** [docs/results.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/results.md) has the full tables, the comparison with 0.0.5 and the `early_end` option.
-- **Quiet, noisy, phone:** [docs/quiet-and-noisy-input.md](https://github.com/KoljaB/RealtimeVAD/blob/main/docs/quiet-and-noisy-input.md) has every level and line we measured, backchannels and DC offset.
-- **Your own audio:** `python benchmarks/speech_off_lead.py <wav dir> out.json` measures the lead on 16 kHz mono WAVs, one turn each, with trailing silence.
+- \* The `repause_s=None` figure was measured on the 3,118 turns, before sound in the trailing silence stopped repeating a `pause`. The 0.0.4 and 0.0.5 rows are what those releases published.
 
 ## Limits
 

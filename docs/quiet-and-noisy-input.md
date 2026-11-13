@@ -8,6 +8,7 @@ measurements are in [results.md](results.md).
 - [The quiet floor follows the speaker](#the-quiet-floor-follows-the-speaker) (since 0.0.5)
 - [The same rows now](#the-same-rows-now)
 - [Steady noise close under the speaker](#steady-noise-close-under-the-speaker-after-005)
+- [What to set](#what-to-set)
 - [Amplifying quiet input for Silero](#amplifying-quiet-input-for-silero-optional)
 - [Short backchannels](#short-backchannels)
 - [DC offset](#dc-offset)
@@ -48,7 +49,8 @@ What this says, and what it doesn't:
   about 20 dB below the speaker (the room-noise row, and the quiet phone line
   with its line noise), no level can be called quiet without calling soft
   speech quiet. 0.0.5 then ends where Silero does: correct, and no faster.
-  The next section is about that.
+  [Steady noise close under the speaker](#steady-noise-close-under-the-speaker-after-005)
+  below is about that.
 - **Very quiet and narrowband speech is a Silero limit.** At −62 dBFS, and on
   the phone line, Silero itself is unsure. Speech it never scores 0.9 used to
   start no segment at all (476 of the phone-line turns, 1,264 at −62 dBFS).
@@ -63,11 +65,15 @@ What this says, and what it doesn't:
 - The phone path is simulated, and the reference for "still talking" is the
   original wideband recording. One speaker, one microphone.
 
-### The same rows now
+## The same rows now
 
 After 0.0.5: `end` is Silero's by default, levels are measured without a DC
 offset, steady noise is subtracted (next section), and a `pause` is repeated
 when sound came back. Same 3,401 turns; "early end" is `VAD(early_end=True)`.
+The table was measured before the last change to `pause` (sound in the
+trailing silence no longer repeats it): with that change the first row is
+92 ms and 92 %, and the other rows were not measured again. The ends are not
+affected by it.
 
 | Speech level | Ended while talking: default = Silero alone | early end | Lost ≥ 100 ms: default = Silero alone | Speech-off lead | earlier than Silero in | `pause` followed by more speech, per s | `end` earlier with early end, median |
 |---|---|---|---|---|---|---|---|
@@ -86,7 +92,7 @@ recorded level. With the early end many ends move, so the count can be lower
 than Silero's; it does not mean fewer ends inside utterances (see
 [results.md](results.md#end)).
 
-### Steady noise close under the speaker (after 0.0.5)
+## Steady noise close under the speaker (after 0.0.5)
 
 Where steady noise is too close under the speaker for a level threshold,
 RealtimeVAD now subtracts the room's spectrum (learned from the frames Silero
@@ -123,7 +129,7 @@ do:
   second of audio: 7.0 ms before, 8.3 ms now (one thread, Silero included,
   idle machine).
 
-What to set:
+## What to set
 
 | If … | then |
 |---|---|
@@ -137,11 +143,13 @@ What to set:
 | you want the level threshold only, as in 0.0.5 | `VAD(noise_subtract_db=None)` |
 | your input is quiet or a phone line, and clean | try `VAD(normalize_to_dbfs=-30)`, see below |
 
+Measure these rows on your own recordings (16 kHz mono WAVs, one turn each):
+
 ```bash
 python benchmarks/quiet_input.py <wav dir> out.json
 ```
 
-### Amplifying quiet input for Silero (optional)
+## Amplifying quiet input for Silero (optional)
 
 Silero is less sure about quiet speech, most of all on a phone line: it finds
 fewer turns and drops out inside them. `VAD(normalize_to_dbfs=-30)` amplifies
@@ -167,7 +175,7 @@ so the first quiet words of a stream can still be missed. On noisy quiet input
 the ends moved by more than the benchmark's "ended while talking" count can
 judge, so that count is not given here; borderline endings did not rise.
 
-### Short backchannels
+## Short backchannels
 
 "mm-hmm", "yeah", "okay": 200 real ones from meeting recordings (AMI corpus,
 close microphone, 0.15–0.8 s long). Up to 0.0.4, 50 of them were not reported
@@ -177,7 +185,7 @@ Silero's own. A `start` comes a median 160 ms after the word begins. Whether
 such a sound is a backchannel, a turn or an interruption is not a VAD
 question and not answered here.
 
-### DC offset
+## DC offset
 
 A DC offset in the input no longer hides the silence from the quiet clock.
 Up to 0.0.5 it did: no early `pause`, no early end. Levels are now measured

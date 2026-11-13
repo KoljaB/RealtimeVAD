@@ -60,7 +60,7 @@ What changed after 0.0.5, and what it cost:
   turns. Before the trailing-silence rule below it was 90 ms (90 %); the last
   `pause` moved later than 0.0.5's in 28 % of turns then, by a median 110 ms,
   and in a sample of those the sound that caused it was 20 to 38 dB above the
-  room. Pauses followed by more speech rose from 1.4 to 1.9 per second.
+  room. Pauses followed by more speech rose from 1.4 to 1.8 per second.
 - **Sound in the trailing silence takes no `pause` back.** A repeated `pause`
   (and a `resume`) needs sound while Silero still takes the audio for speech,
   or no longer ago than its lag (`repause_lag_s`, 0.128 s): a breath or a
@@ -124,10 +124,14 @@ today's thresholds (`repause_s=None`), on the same clips and turns:
 
 \* The `repause_s=None` row is 0.0.5's behaviour at today's thresholds, measured
 before the trailing-silence rule and without it, on the 3,118-turn set. The
-quiet, noisy and phone-line figures further down are from that run too.
+quiet, noisy and phone-line figures in the bullets below and in
+[quiet-and-noisy-input.md](quiet-and-noisy-input.md) are from before that rule too.
 
 - The one-speaker turns have no word timings, so "too early" cannot be
   counted there.
+- The one-speaker column counts the 2,675 turns that have both a last `pause`
+  and a Silero speech-off, which is why its 1.88 pauses per second differ
+  from the 1.8 (1.84) over all 3,153 turns in the first table.
 - All of the lead that the default gave up after 0.0.5 went to the repeated
   `pause`: with `repause_s=None` the lead is that of 0.0.5 or 2 ms more. The
   noise subtraction and the DC fix cost none.
@@ -169,8 +173,8 @@ How the modes work, and what they leave alone:
 ## `end`
 
 By default `end` comes where Silero alone ends the segment (same thresholds,
-same 0.24 s): on all of the audio above, and in every row of the quiet-input
-table below, RealtimeVAD and Silero alone end the same number of turns while
+same 0.24 s): on all of the audio above, and in every row of the tables in
+[quiet-and-noisy-input.md](quiet-and-noisy-input.md), RealtimeVAD and Silero alone end the same number of turns while
 the speaker goes on, lose the same speech, and no `end` is later. The
 segment's `speech_end` is the quiet clock's, so you still learn where the
 speech stopped.
@@ -190,10 +194,16 @@ trade as a shorter silence setting. It is now the option
 | AMI headset, others talking | 52 % | 16 ms | 0 – 88 ms | 0 | 33.2 % | 30.9 % |
 
 Silero's probabilities are the same with and without the quiet clock in all
-7,080 clips, with the default `end` and with the early end. The clips are whole sentences cut at 0.24 s, so a third of them contain a
-pause that long for any detector; the early end adds 2 to 3 points to that.
+7,080 clips, with the default `end` and with the early end, in all three
+`pause_mode` settings. The clips are whole sentences cut at 0.24 s, so a third
+of them contain a pause that long for any detector; the early end adds 2 to 3
+points to that.
+
 The one-speaker turns have no word timings; there the early end left speech
-of the recording inside its 0.24 s wait in 49 of 3,401 turns.
+of the recording inside its 0.24 s wait in 49 of 3,401 turns. The one-speaker
+row and this count were measured before two late fixes to the early end (see
+the [changelog](../CHANGELOG.md)); the four rows under it were measured again
+after them and did not move.
 
 Reproduce with your own recordings (16 kHz mono WAVs, one turn each, with
 trailing silence):
