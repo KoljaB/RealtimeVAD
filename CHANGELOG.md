@@ -39,6 +39,8 @@ tables: [README](README.md), [docs/results.md](docs/results.md).
   inside the previous segment and report a phantom segment.
 - With the early end, the recovery could run on other frames than without it,
   and one clip of 7,080 ended later than Silero alone.
+- With the early end, a segment that opened right after an early end could
+  end up to three frames before Silero's own count.
 
 ### Removed
 
