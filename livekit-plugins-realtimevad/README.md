@@ -62,8 +62,12 @@ from a pause to an earlier reply. A full agent:
 A real `AgentSession` (`turn_detection="vad"`, `min_delay` 0.5 s), a real STT
 running locally, fake LLM and TTS, audio at real-time pace. All four columns
 wait 0.55 s of Silero silence for `END_OF_SPEECH`, so only the pause differs.
-Median ms after the true end of speech, 3 repetitions (they agree within
-30 ms):
+Each table says which RealtimeVAD core it was measured with: 0.0.5 (PyPI) or
+the source at commit 60ed995 (the next release: the end is Silero's by default,
+a pause can be reported again). The Silero columns do not depend on the core.
+
+With core 0.0.5, median ms after the true end of speech, 3 repetitions (they
+agree within 30 ms):
 
 | First agent audio | Silero | Silero + `SpeculativeSTT` | RealtimeVAD | RealtimeVAD + `SpeculativeSTT` |
 |---|---|---|---|---|
@@ -93,7 +97,7 @@ sentence with a 0.58 s gap became two turns with RealtimeVAD only. Both had one
 cause, fixed since: see "The VAD" below. One more repetition after the fix
 ([benchmarks/speculative_check_after_fixes.txt](benchmarks/speculative_check_after_fixes.txt)):
 
-| First agent audio, after the fix | Silero | Silero + `SpeculativeSTT` | RealtimeVAD | RealtimeVAD + `SpeculativeSTT` |
+| First agent audio, after the fix, core 0.0.5 | Silero | Silero + `SpeculativeSTT` | RealtimeVAD | RealtimeVAD + `SpeculativeSTT` |
 |---|---|---|---|---|
 | faster-whisper base, LLM first token 0.5 s | 2121 | 1708 | 2115 | 1561 |
 | streaming sherpa-onnx, LLM first token 0.5 s | 1437 | 1005 | 1437 | 954 |
@@ -107,6 +111,32 @@ RealtimeVAD column equals the Silero column. The wrapper gains 420 to 440 ms
 (240 ms with the fast LLM); RealtimeVAD's pause adds 139 ms with Whisper (49 to
 180), 42 ms with the streaming recognizer (22 to 203) and 0 ms with the fast
 LLM.
+
+### Core 0.0.5 against core 60ed995
+
+What RealtimeVAD's pause adds on top of the Silero plugin with the same
+wrapper, one repetition per cell, the same plugin code for both cores
+([benchmarks/speculative_check_by_core.txt](benchmarks/speculative_check_by_core.txt)).
+Sooner: first agent audio, median ms (10th to 90th percentile of the
+sentences). Work: RealtimeVAD against the Silero plugin.
+
+| | core 0.0.5, `pause` 0.1 | core 60ed995, `pause` 0.1 | core 0.0.5, `pause` 0.15 | core 60ed995, `pause` 0.15 |
+|---|---|---|---|---|
+| Whisper, LLM 0.5 s: sooner | 139 (48 to 180) | 139 (40 to 173) | 119 (-12 to 152) | 120 (3 to 172) |
+| … STT requests, 16 sentences | 68 vs 39 | 66 vs 39 | 48 vs 37 | 46 vs 37 |
+| … LLM calls | 17 vs 17 | 17 vs 17 | 17 vs 17 | 17 vs 17 |
+| sherpa-onnx, LLM 0.5 s: sooner | 59 (16 to 199) | 88 (0 to 197) | 59 (33 to 82) | 56 (0 to 82) |
+| … flushes, 10 sentences | 47 vs 34 | 47 vs 34 | 35 vs 33 | 36 vs 33 |
+| … LLM calls | 30 vs 22 | 30 vs 22 | 23 vs 21 | 24 vs 22 |
+| sherpa-onnx, LLM 0.1 s: sooner | 0 | 0 | 0 | 0 |
+
+- The new core changes neither the gain nor the cost beyond what one repetition
+  can tell apart (times here come in steps of about 20 ms; 10 sentences).
+- `pause=0.15` keeps most of the gain with Whisper (120 of 139 ms) and nearly
+  removes the extra work with the streaming recognizer (36 against 33 flushes).
+- On core 60ed995 the plain RealtimeVAD column is within 25 ms of the Silero
+  column too (first agent audio 2131 / 1439 / 1059 against 2109 / 1438 / 1035, no sentence
+  split in one VAD only).
 
 One Hindi sentence had no reply in any column of the first runs because the
 benchmark closed the session before Whisper was done; it now waits (Whisper
@@ -126,7 +156,11 @@ A pause is often not the end. When speech goes on:
 
 - The request is cancelled if it still runs, and its transcript is never sent.
   The next pause asks again with all the audio so far: the newest pause always
-  replaces an older one.
+  replaces an older one. RealtimeVAD (from the release after 0.0.5) reports a
+  pause again when sound follows the first; the wrapper asks again only while
+  Silero has not counted `pause` of silence itself. A noise after the last word
+  does not throw the transcript away (it did in a first version: 4 of 16
+  sentences came 120 to 480 ms later).
 - A reply LiveKit already began from a transcript is replaced by the next
   transcript or discarded when the turn is committed. It is never spoken.
 - A streaming STT that was flushed has finalized a fragment. LiveKit joins the
@@ -145,27 +179,30 @@ not the end.
 
 `pause` is the knob. Replayed over 24 sentences (165 s of speech, no STT; the
 requests the wrapper would make, and when the one that becomes the reply is
-made, in ms of audio after the true end of speech):
+made, in ms of audio after the true end of speech). RealtimeVAD core 60ed995,
+core 0.0.5 in brackets where it differs:
 
 | `pause` | Silero plugin: requests per sentence | … last request | RealtimeVAD: requests per sentence | … last request |
 |---|---|---|---|---|
-| 0.05 | 2.33 | 204 | 6.46 | 76 |
-| 0.1 (default) | 2.29 | 268 | 3.75 | 140 |
-| 0.15 | 2.21 | 300 | 2.54 | 188 |
-| 0.2 | 2.00 | 364 | 2.25 | 268 |
-| 0.3 | 1.58 | 460 | 1.92 | 380 |
+| 0.05 | 2.33 | 204 | 6.79 (6.62) | 92 |
+| 0.1 (default) | 2.29 | 268 | 3.79 (3.83) | 140 |
+| 0.15 | 2.21 | 300 | 2.67 | 204 (220) |
+| 0.2 | 2.00 | 364 | 2.33 (2.29) | 252 (284) |
+| 0.3 | 1.58 | 460 | 2.00 (1.92) | 348 (380) |
 
-- At about the same number of requests (2.3 to 2.5 per sentence) RealtimeVAD
-  with `pause=0.15` asks 15 to 80 ms sooner than the Silero plugin does at 0.05
-  or 0.1.
+- RealtimeVAD with `pause=0.15` or 0.2 makes 2.3 to 2.7 requests per sentence,
+  about as many as the Silero plugin at 0.05 or 0.1 (2.3), and asks at 204 to
+  252 ms where the Silero plugin asks at 204 to 268 ms: at equal cost the
+  earlier pause is worth little. Its gain is in the range the Silero plugin
+  cannot reach.
 - The Silero plugin's raw silence cannot ask before about 200 ms after the
-  speech. RealtimeVAD's can (140 ms, 76 ms), at 1.6 to 2.8 times the requests.
+  speech. RealtimeVAD's can (140 ms, 92 ms), at 1.7 to 3 times the requests.
 - `min_new_speech` saves less and loses more: with RealtimeVAD at `pause=0.1`,
-  0.3 s takes the requests from 3.75 to 3.29 and passes over the last pause of
+  0.3 s takes the requests from 3.79 to 3.29 and passes over the last pause of
   2 of the 24 sentences, which are then transcribed at `END_OF_SPEECH`; 1.0 s
   gives 2.25 and loses 7.
 
-Full table: [benchmarks/pause_requests.txt](benchmarks/pause_requests.txt)
+Full tables: [benchmarks/pause_requests.txt](benchmarks/pause_requests.txt), core 0.0.5: [benchmarks/pause_requests_core_0.0.5.txt](benchmarks/pause_requests_core_0.0.5.txt)
 (`python benchmarks/pause_requests.py out.txt`).
 
 ## The VAD
