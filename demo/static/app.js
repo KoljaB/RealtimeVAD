@@ -149,18 +149,18 @@ function report(s) {
     const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
     tile("t-off", same ? "0 ms" : `${Math.abs(s.offLead).toFixed(0)} ms`);
     $("t-off-unit").textContent = same ? "before Silero: same time" : s.offLead > 0 ? "sooner than Silero" : "later than Silero";
-    $("t-off-sub").textContent = n === 1 ? "first turn · the median follows with the next one"
-      : `median ${signed(median)} over ${n} turns · sooner in ${sorted.filter((d) => d >= 1).length} of ${n}`;
+    $("t-off-sub").textContent = `${early} early pause${early === 1 ? "" : "s"} before it in this turn · the head start a speculative reply gets`;
+    tile("t-median", signed(median));
+    $("t-median-unit").textContent = n === 1 ? "median head start · 1 turn"
+      : `median head start · sooner in ${sorted.filter((d) => d >= 1).length} of ${n} turns`;
     tile("t-early", `${early}`);
   }
-  tile("t-end", signed(s.endLead));
-  $("t-end-unit").textContent = Math.abs(s.endLead) < 1 ? "as Silero" : s.endLead > 0 ? "sooner than Silero" : "later than Silero";
   const card = document.createElement("article");
   card.className = "turn";
   card.innerHTML = `<span>Turn ${s.n} · ${s.voiced.toFixed(1)} s of speech</span>
-    <span>knew you stopped <b class="cyan">${s.offLead != null ? signed(s.offLead) : "–"}</b> sooner</span>
-    <span>turn end <b class="green">${signed(s.endLead)}</b> sooner</span>
-    <span><b class="amber">${early ?? "–"}</b> early pauses</span>`;
+    <span>last pause <b class="cyan">${s.offLead != null ? signed(s.offLead) : "–"}</b> before Silero</span>
+    <span><b class="green">${s.pauses.length}</b> pause signal${s.pauses.length === 1 ? "" : "s"}</span>
+    <span><b class="amber">${early ?? "–"}</b> early</span>`;
   $("turns").prepend(card);
 }
 const signed = (ms) => (Math.abs(ms) < 1 ? "same time" : ms > 0 ? `${ms.toFixed(0)} ms` : `−${(-ms).toFixed(0)} ms`);
@@ -313,7 +313,7 @@ function draw() {
     // RealtimeVAD: solid while in speech, amber dots at its pauses
     bar(R1, s.start, rOff ?? s.end ?? t1, C.cyan);
     g.fillStyle = C.amber;
-    for (const t of all ? s.pauses : []) if (t >= t0 && t !== rOff) { g.beginPath(); g.arc(x(t), R1.top + R1.h / 2, 3, 0, 7); g.fill(); }
+    for (const t of s.pauses) if (t >= t0 && t !== rOff) { g.beginPath(); g.arc(x(t), R1.top + R1.h / 2, 3, 0, 7); g.fill(); }
     // Silero alone: same start, solid until its first silent frame
     bar(R2, s.start, sOff ?? s.sileroEnd ?? t1, C.red);
     if (s.end != null && rOff != null) {               // the wait and the turn end only with every event shown
@@ -361,9 +361,10 @@ function reset() {
                          inferMs: [], onsets: [], leads: [] });
   state.segments = new Map();
   $("turns").innerHTML = "";
-  ["t-off", "t-end", "t-early", "t-cpu"].forEach((id) => ($(id).textContent = "–"));
-  $("t-off-unit").textContent = $("t-end-unit").textContent = "sooner than Silero";
-  $("t-off-sub").textContent = "Talk, then stop. Both detectors hear the same audio.";
+  ["t-off", "t-median", "t-early", "t-cpu"].forEach((id) => ($(id).textContent = "–"));
+  $("t-off-unit").textContent = "sooner than Silero";
+  $("t-median-unit").textContent = "median head start";
+  $("t-off-sub").textContent = "Talk, then stop. This is the head start a speculative reply gets.";
 }
 
 // ---------------------------------------------------------------- controls

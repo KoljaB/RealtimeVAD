@@ -26,22 +26,22 @@
 
   <section class="tiles">
     <div class="tile hero cyan">
-      <label>RealtimeVAD knew you stopped</label>
+      <label>Your last pause signal came</label>
       <p><b id="t-off">–</b><span id="t-off-unit">sooner than Silero</span></p>
-      <small id="t-off-sub">Talk, then stop. Both detectors hear the same audio.</small>
+      <small id="t-off-sub">Talk, then stop. This is the head start a speculative reply gets.</small>
     </div>
-    <div class="tile green"><label>Turn end</label><b id="t-end">–</b><small id="t-end-unit">sooner than Silero</small></div>
+    <div class="tile green"><label>All turns so far</label><b id="t-median">–</b><small id="t-median-unit">median head start</small></div>
     <div class="tile amber"><label>Early pauses</label><b id="t-early">–</b><small>fired, then you kept talking</small></div>
   </section>
 
   <section class="stage">
     <canvas id="scope"></canvas>
     <div class="legend">
-      <span class="k off">● knows you stopped</span>
-      <span class="k soff">● Silero knows</span>
-      <span class="k won">shaded: how much sooner RealtimeVAD knew</span>
-      <span class="k end detail">▮ turn end, after the striped wait</span>
-      <span class="k pause detail">small dot: pause, speech went on</span>
+      <span class="k off">● last pause: you stopped</span>
+      <span class="k soff">● Silero notices</span>
+      <span class="k won">shaded: the head start</span>
+      <span class="k pause">small dot: early pause, speech went on</span>
+      <span class="k end detail">▮ turn end, after the striped wait (the same for both)</span>
       <span class="k onset detail">ring: onset (grey: never confirmed)</span>
       <span class="k quiet detail">dashed: quiet threshold and Silero's 0.45 line</span>
     </div>

@@ -24,9 +24,10 @@ and press **Play sample**.
 
 | On the page | Meaning |
 |---|---|
-| **The big number** | How much sooner RealtimeVAD knew you stopped in your last turn. Below it: the median over all turns so far, and in how many of them it was sooner |
-| **Turn end** | How much sooner RealtimeVAD closed the turn. Since 0.1.0 the turn ends where Silero alone ends it, so this shows 0 ms; it is never later |
+| **The big number** | How much sooner RealtimeVAD's last pause signal came than Silero noticed, in your last turn. This is the head start a speculative reply gets |
+| **All turns so far** | The median of that number over all turns, and in how many of them RealtimeVAD was sooner |
 | **Early pauses** | Pauses that fired while you kept talking. This is the price of reacting so early |
+| **Small amber dots** | Those early pauses on the timeline |
 | **Yellow dot** | Where RealtimeVAD knows you stopped |
 | **Red dot** | Where Silero alone knows |
 | **Shaded band** | The time between the two dots: what RealtimeVAD won |
