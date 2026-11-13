@@ -819,3 +819,37 @@ def test_a_segment_opened_after_an_early_end_counts_sileros_silence_as_silero_do
         assert [e.time for e in alone] == [pytest.approx(34 * F)]  # 8 silent frames after frame 25
         assert len(ends) == 2 and all(e.segment.early for e in ends)  # both by the quiet clock...
         assert ends[1].time == pytest.approx(0.72 + 0.3)  # ...0.3 s after the first whole quiet 10 ms block
+
+
+def test_sound_in_the_trailing_silence_takes_no_pause_back():
+    # 30 ms of sound (a breath, a click, a door) 160 ms after Silero's final silent frame, while
+    # Silero scores it 0.1: the standing pause stays the last one and no resume comes. Seen
+    # live: a consumer redid its speculative work for nothing, or cancelled a correct result.
+    first = (10 * FRAME + 160) / 16000
+    late = [(4608, 480, 0.02)]  # Silero has been silent for 5 frames when it starts
+    ev = word_then(late, early_end=False, resume_events=True)
+    assert kinds(ev) == ["start", "pause", "end"]
+    assert ev[1].time == pytest.approx(first)
+    # the dip inside the last word still repeats: Silero lags the audio and is voiced there
+    ev = word_then([(320, 480, 0.02)], early_end=False, resume_events=True)
+    assert kinds(ev) == ["start", "pause", "resume", "pause", "end"]
+    # ...and so does sound that Silero itself hears as speech again
+    probs = [0.95] * 2 + [0.9] * 8 + [0.6] * 4 + [0.1] * 4 + [0.9] * 2 + [0.1] * 12
+    audio = np.zeros(32 * FRAME, dtype=np.float32)
+    audio[: 10 * FRAME] = level(10 * FRAME, 0.1)
+    audio[18 * FRAME : 20 * FRAME] = level(2 * FRAME, 0.1)
+    ev = VAD(probability=scripted(probs), resume_events=True).feed(audio)
+    assert kinds(ev) == ["start", "pause", "resume", "pause", "end"]
+    assert ev[3].time > 20 * F
+    # the rule is a parameter: None is what 0.1.0 did before it
+    assert kinds(word_then(late, early_end=False, repause_lag_s=None)) == ["start", "pause", "pause", "end"]
+
+
+@pytest.mark.parametrize("mode", ["accurate", "balanced", "fast"])
+def test_the_trailing_silence_rule_holds_in_every_pause_mode(mode):
+    # 80 ms of sound, enough to re-arm the quiet clock in any mode, 160 ms after Silero's
+    # final silent frame: no second pause, no resume. Inside the last word it still re-arms.
+    late = word_then([(4608, 1280, 0.02)], early_end=False, resume_events=True, pause_mode=mode)
+    assert kinds(late) == ["start", "pause", "end"]
+    assert kinds(word_then([(320, 1600, 0.02)], early_end=False, resume_events=True,
+                           pause_mode=mode)) == ["start", "pause", "resume", "pause", "end"]

@@ -40,11 +40,11 @@ still to come.
 
 | Audio | Last `pause` too early: 0.0.5 | now | Median lead over Silero: 0.0.5 | now | Earlier than Silero in: 0.0.5 | now | `pause` followed by more speech, per s: 0.0.5 | now |
 |---|---|---|---|---|---|---|---|---|
-| LibriSpeech clean | 7.6 % | 2.2 % | 88 ms | 84 ms | 84 % | 83 % | 1.64 | 1.97 |
-| LibriSpeech other | 6.2 % | 1.3 % | 86 ms | 80 ms | 82 % | 83 % | 1.42 | 1.70 |
-| AMI headset, speaker alone | 10.3 % | 5.7 % | 102 ms | 88 ms | 86 % | 79 % | 1.75 | 2.16 |
-| AMI headset, others talking | 11.1 % | 8.4 % | 100 ms | 84 ms | 77 % | 67 % | 1.81 | 2.28 |
-| AMI distant microphone | 2.6 % | 2.5 % | 0 ms | 0 ms | 30 % | 30 % | 0.60 | 0.88 |
+| LibriSpeech clean | 7.6 % | 2.2 % | 88 ms | 84 ms | 84 % | 84 % | 1.64 | 1.96 |
+| LibriSpeech other | 6.2 % | 1.3 % | 86 ms | 82 ms | 82 % | 85 % | 1.42 | 1.69 |
+| AMI headset, speaker alone | 10.3 % | 5.7 % | 102 ms | 90 ms | 86 % | 80 % | 1.75 | 2.13 |
+| AMI headset, others talking | 11.1 % | 8.9 % | 100 ms | 86 ms | 77 % | 69 % | 1.81 | 2.24 |
+| AMI distant microphone | 2.6 % | 3.2 % | 0 ms | 0 ms | 30 % | 31 % | 0.60 | 0.85 |
 
 What changed after 0.0.5, and what it cost:
 
@@ -55,13 +55,26 @@ What changed after 0.0.5, and what it cost:
   above the room lets the next quiet report a new `pause`. The first `pause`
   comes exactly as early as before.
 - **The lead is measured on the last `pause`, so it fell:** from 100 ms
-  (earlier than Silero in 98 % of turns) to 90 ms (90 %) on the one-speaker
-  turns. There the last `pause` moved later in 28 % of turns, by a median
-  110 ms; in a sample of those, the sound that caused it was 20 to 38 dB above
-  the room. Pauses followed by more speech rose from 1.4 to 1.9 per second.
+  (earlier than Silero in 98 % of turns) to 92 ms (92 %) on the one-speaker
+  turns. Before the trailing-silence rule below it was 90 ms (90 %); the last
+  `pause` moved later than 0.0.5's in 28 % of turns then, by a median 110 ms,
+  and in a sample of those the sound that caused it was 20 to 38 dB above the
+  room. Pauses followed by more speech rose from 1.4 to 1.9 per second.
+- **Sound in the trailing silence takes no `pause` back.** A repeated `pause`
+  (and a `resume`) needs sound while Silero still takes the audio for speech,
+  or no longer ago than its lag (`repause_lag_s`, 0.128 s): a breath or a
+  click once Silero has been counting silence for longer changes nothing, and
+  the standing `pause` remains the last one. It halves the last pauses that
+  land more than 96 ms after Silero's own speech-off (4.8 / 6.1 / 7.3 / 11.6 %
+  of clips to 2.8 / 3.7 / 5.0 / 8.1 %) and cuts the clips whose last `pause`
+  is taken back by a `resume` from 2.8 / 4.5 / 4.3 / 9.1 % to
+  1.2 / 1.5 / 1.1 / 4.1 %. It costs 0.5 points of early last pauses on the
+  AMI headsets with other people talking (8.4 to 8.9 %) and 0.7 on the distant
+  microphone, and nothing on the other sets. `VAD(repause_lag_s=None)` is
+  what 0.1.0 did before the rule.
 - **What is left** are word endings that stay under the quiet threshold the
   whole time (about 40 % of the remaining early pauses on LibriSpeech, 70 % on
-  the AMI headsets). On the headsets with other people talking, 8 % of the
+  the AMI headsets). On the headsets with other people talking, 9 % of the
   last pauses are still too early. Silero's own speech-off is that early in
   0.2 to 0.3 % of the read sentences: it is late, and rarely early.
 - The 206 ms against `VADIterator` in earlier versions of this page was
@@ -69,12 +82,13 @@ What changed after 0.0.5, and what it cost:
   the fixes on this page, 238 ms with the new `pause`.
 - `VAD(repause_s=None)` gives one `pause` per stretch of speech, as in 0.0.5.
 
-The optional `resume` event on the same clips (close microphones): 1.6 to 2.1
+The optional `resume` event on the same clips (close microphones): 1.6 to 2.0
 per second of speech; it comes a median 50 ms after its `pause` (p90 120 to
-150 ms) and 20 ms after the first 10 ms block that was not quiet again (p90
-50 ms). In 3 to 9 % of clips a `resume` follows the last `pause` and no new
-`pause` comes before the `end`: the turn then ends with the speculative work
-cancelled, and `end` is the signal to act on.
+140 ms) and 20 ms after the first 10 ms block that was not quiet again (p90
+50 ms). In 1.1 to 4.1 % of clips a `resume` follows the last `pause` and no
+new `pause` comes before the `end`: the turn then ends with the speculative
+work cancelled, and `end` is the signal to act on. Before the
+trailing-silence rule it was 2.8 to 9.1 %.
 
 The three `pause_mode` settings, and the one `pause` per stretch of 0.0.5 at
 today's thresholds (`repause_s=None`), on the same clips and turns:
@@ -82,30 +96,33 @@ today's thresholds (`repause_s=None`), on the same clips and turns:
 | | LibriSpeech clean | LibriSpeech other | AMI headset, alone | AMI headset, others talking | one speaker, 3,118 turns |
 |---|---|---|---|---|---|
 | **Median lead over Silero** | | | | | |
-| `"accurate"` | 84 ms | 80 ms | 88 ms | 84 ms | 90 ms |
-| `repause_s=None` | 90 ms | 88 ms | 102 ms | 98 ms | 102 ms |
+| `"accurate"` | 84 ms | 82 ms | 90 ms | 86 ms | 92 ms |
+| `repause_s=None` * | 90 ms | 88 ms | 102 ms | 98 ms | 102 ms |
 | `"balanced"` | 104 ms | 102 ms | 112 ms | 114 ms | 112 ms |
-| `"fast"` | 120 ms | 116 ms | 124 ms | 126 ms | 130 ms |
+| `"fast"` | 120 ms | 118 ms | 124 ms | 126 ms | 130 ms |
 | **Earlier than Silero in** | | | | | |
-| `"accurate"` | 83 % | 83 % | 79 % | 67 % | 90 % |
-| `repause_s=None` | 89 % | 88 % | 85 % | 75 % | 98 % |
-| `"balanced"` | 94 % | 92 % | 88 % | 82 % | 98 % |
-| `"fast"` | 96 % | 94 % | 91 % | 87 % | 98 % |
+| `"accurate"` | 84 % | 85 % | 80 % | 69 % | 92 % |
+| `repause_s=None` * | 89 % | 88 % | 85 % | 75 % | 98 % |
+| `"balanced"` | 94 % | 93 % | 89 % | 83 % | 98 % |
+| `"fast"` | 96 % | 95 % | 92 % | 87 % | 98 % |
 | **Last `pause` too early** (more than 100 ms, sound to come) | | | | | |
-| `"accurate"` | 2.2 % | 1.3 % | 5.7 % | 8.4 % | – |
-| `repause_s=None` | 8.0 % | 6.8 % | 11.4 % | 12.4 % | – |
-| `"balanced"` | 13.9 % | 11.3 % | 13.8 % | 17.0 % | – |
-| `"fast"` | 23.5 % | 17.6 % | 20.1 % | 21.1 % | – |
+| `"accurate"` | 2.2 % | 1.3 % | 5.7 % | 8.9 % | – |
+| `repause_s=None` * | 8.0 % | 6.8 % | 11.4 % | 12.4 % | – |
+| `"balanced"` | 13.9 % | 11.3 % | 14.4 % | 17.2 % | – |
+| `"fast"` | 23.5 % | 17.7 % | 20.6 % | 21.4 % | – |
 | **… more than 200 ms before the end of the word** | | | | | |
-| `"accurate"` | 0.1 % | 0.1 % | 1.6 % | 3.1 % | – |
-| `repause_s=None` | 1.6 % | 0.8 % | 3.8 % | 4.5 % | – |
-| `"balanced"` | 2.8 % | 1.7 % | 6.8 % | 6.8 % | – |
-| `"fast"` | 5.5 % | 3.6 % | 9.8 % | 8.8 % | – |
+| `"accurate"` | 0.1 % | 0.1 % | 1.6 % | 3.4 % | – |
+| `repause_s=None` * | 1.6 % | 0.8 % | 3.8 % | 4.5 % | – |
+| `"balanced"` | 2.8 % | 1.7 % | 7.3 % | 6.9 % | – |
+| `"fast"` | 5.5 % | 3.6 % | 10.3 % | 9.0 % | – |
 | **`pause` followed by more speech, per s** | | | | | |
-| `"accurate"` | 1.97 | 1.70 | 2.16 | 2.28 | 1.86 |
-| `repause_s=None` | 1.66 | 1.44 | 1.74 | 1.83 | 1.38 |
-| `"balanced"` | 1.94 | 1.74 | 1.92 | 1.99 | 1.57 |
-| `"fast"` | 2.23 | 2.03 | 2.06 | 2.12 | 1.65 |
+| `"accurate"` | 1.96 | 1.69 | 2.13 | 2.24 | 1.88 |
+| `repause_s=None` * | 1.66 | 1.44 | 1.74 | 1.83 | 1.38 |
+| `"balanced"` | 1.94 | 1.74 | 1.92 | 1.98 | 1.62 |
+| `"fast"` | 2.23 | 2.02 | 2.05 | 2.12 | 1.70 |
+
+\* The `repause_s=None` row is 0.0.5's behaviour at today's thresholds, measured
+before the trailing-silence rule and without it.
 
 - The one-speaker turns have no word timings, so "too early" cannot be
   counted there.

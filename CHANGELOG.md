@@ -14,9 +14,12 @@ tables: [README](README.md), [docs/results.md](docs/results.md).
   the quiet clock made the end. If you relied on the earlier `end`, set it.
 - **`pause` is repeated.** When sound comes back after a `pause` and the
   audio goes quiet again, a new `pause` follows. The last `pause` is more
-  than 100 ms too early in 1 to 8 % of clips instead of 6 to 11 %; its median
-  lead over Silero is 90 ms instead of 100 ms on the one-speaker turns.
+  than 100 ms too early in 1 to 9 % of clips instead of 6 to 11 %; its median
+  lead over Silero is 92 ms instead of 100 ms on the one-speaker turns.
   `VAD(repause_s=None)` gives one `pause` per stretch of speech, as before.
+  Sound in the trailing silence does not repeat a `pause`: it counts only
+  while Silero still takes the audio for speech or stopped no longer ago than
+  its lag (`repause_lag_s`, 0.128 s).
 
 ### New
 
