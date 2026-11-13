@@ -74,7 +74,9 @@ function stop() {
 }
 
 function onAudio(samples) {
-  if (!state.ws) return;
+  // Audio captured before the socket is open never reaches the server. Counting it would put the
+  // waveform that much later than the server's events on the timeline.
+  if (!state.ws || state.ws.readyState !== 1) return;
   for (const s of samples) {                          // 10 ms RMS blocks for the waveform
     state.blockAcc.push(s);
     state.captured++;
