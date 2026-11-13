@@ -125,6 +125,40 @@ def test_click_restarts_the_quiet_count():
     assert ev[-1].time < 22 * F
 
 
+def test_sound_after_a_pause_gives_a_new_pause():
+    # The level dips under the threshold inside the last word and comes back for 30 ms (a
+    # release, a weak last syllable): too short to re-arm the quiet clock, but the quiet after
+    # it is reported as a new pause, so the latest pause is where the speech really stopped.
+    ev = word_then([(320, 480, 0.02)])
+    assert kinds(ev) == ["start", "pause", "pause", "end"]
+    first, again = (10 * FRAME + 160) / 16000, (10 * FRAME + 320 + 480 + 160) / 16000
+    assert ev[1].time == pytest.approx(first) and ev[2].time == pytest.approx(again)
+    assert ev[2].source == "quiet"
+    assert ev[-1].segment.speech_end == pytest.approx(again)
+    # 20 ms are needed: one block is a click, not sound
+    assert kinds(word_then([(320, 160, 0.02)])) == ["start", "pause", "end"]
+    assert kinds(word_then([(320, 480, 0.02)], repause_s=None)) == ["start", "pause", "end"]
+    assert kinds(word_then([(320, 480, 0.02)], repause_s=0.04)) == ["start", "pause", "end"]
+    assert kinds(word_then([(320, 640, 0.02)], repause_s=0.04)) == ["start", "pause", "pause", "end"]
+
+
+def test_the_rooms_own_flutter_gives_no_new_pause():
+    # Room noise at 0.001 before the word; after it, 30 ms that are over the quiet threshold
+    # but less than 6 dB above that room: no new pause. 10 dB above it: a new pause.
+    def scene(amp, **kw):
+        probs = [0.0] * 30 + [0.95] * 2 + [0.9] * 8 + [0.6] * 4 + [0.1] * 12
+        audio = level(56 * FRAME, 0.001)
+        audio[30 * FRAME : 40 * FRAME] = level(10 * FRAME, 0.1)
+        at = 40 * FRAME + 480 - (40 * FRAME) % 160
+        audio[at : at + 480] = level(480, amp)
+        kw = {"quiet_rms": 0.0005, "noise_margin_db": 3.0, **kw}
+        return kinds(VAD(probability=scripted(probs), **kw).feed(audio))
+
+    assert scene(0.0018) == ["start", "pause", "end"]  # 5 dB above the room, over the threshold
+    assert scene(0.0018, repause_room_db=3.0) == ["start", "pause", "pause", "end"]
+    assert scene(0.0032) == ["start", "pause", "pause", "end"]  # 10 dB above it
+
+
 def test_clicks_that_keep_coming_leave_the_end_to_silero():
     # A click every 0.2 s never leaves 0.24 s of unbroken quiet: Silero's count ends it.
     probs = [0.95] * 2 + [0.9] * 8 + [0.6] * 4 + [0.1] * 12

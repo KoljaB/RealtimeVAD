@@ -171,6 +171,7 @@ def measure(path):
                 seg_pauses = [p for p in pauses if seg_start <= p[0] <= end_t]
                 if seg_pauses:
                     off = seg_pauses[-1][0]
+                    out["rvad"].update(off=off, pauses=len(seg_pauses), speech_s=round(end_t - seg_start, 2))
                     t5 = first_of_final_silent_run(frames, 0.5, end_t + 1.0)
                     vi = vaditerator_end([f for f in frames if f[0] >= seg_start - 0.2])
                     out["rvad"]["lead_ms_0.5"] = None if t5 is None else round((t5 - off) * 1000, 1)
@@ -189,9 +190,9 @@ def summarize(rows):
     med = lambda v: float("nan") if not len(v) else float(np.median(v))  # noqa: E731
     print(f"{len(rows)} files, {len(ok)} measured")
     print(f"{'variant':9} {'speech':>7} {'premature':>11} {'cut':>5} {'cut.9':>5} {'resum':>5} {'lost>=100ms':>12} {'no start':>12} "
-          f"{'final gain':>10} {'later':>5} {'off lead':>8} {'vs VADIt':>8} {'earlier':>7}")
+          f"{'final gain':>10} {'later':>5} {'off lead':>8} {'vs VADIt':>8} {'earlier':>7} {'false pause':>11}")
     print(f"{'':9} {'dBFS':>7} {'rvad/silero':>11} {'turns':>5} {'turns':>5} {'turns':>5} {'rvad/silero':>12} {'rvad/sil/0.5':>12} "
-          f"{'med ms':>10} {'turns':>5} {'med ms':>8} {'med ms':>8} {'%':>7}")
+          f"{'med ms':>10} {'turns':>5} {'med ms':>8} {'med ms':>8} {'%':>7} {'per s':>11}")
     out = {}
     for name in VARIANTS:
         v = [r["v"][name] for r in ok]
@@ -215,11 +216,14 @@ def summarize(rows):
             "final_gain_ms": med(gain), "later": sum(g < -1e-3 for g in gain), "compared": len(gain),
             "lead_ms": med(lead), "lead_vi_ms": med(lead_vi),
             "earlier_pct": 100 * float(np.mean([m > 0 for m in lead])) if lead else float("nan"),
+            # pauses before the last one of the final segment, per second of that segment
+            "false_pauses_per_s": sum(a["rvad"].get("pauses", 1) - 1 for a in v)
+            / max(1e-9, sum(a["rvad"].get("speech_s", 0.0) for a in v)),
         }
         out[name] = s
         print(f"{name:9} {s['speech_dbfs']:7.1f} {s['premature_rvad']:5d}/{s['premature_silero']:<5d} {s['cut']:5d} {s['cut9']:5d} {s['resumed']:5d} "
               f"{s['lost_rvad']:6d}/{s['lost_silero']:<5d} {s['nostart_rvad']:4d}/{s['nostart_silero']}/{s['nostart_silero_default']:<4d} "
-              f"{s['final_gain_ms']:10.0f} {s['later']:5d} {s['lead_ms']:8.0f} {s['lead_vi_ms']:8.0f} {s['earlier_pct']:7.1f}")
+              f"{s['final_gain_ms']:10.0f} {s['later']:5d} {s['lead_ms']:8.0f} {s['lead_vi_ms']:8.0f} {s['earlier_pct']:7.1f} {s['false_pauses_per_s']:11.2f}")
     return out
 
 

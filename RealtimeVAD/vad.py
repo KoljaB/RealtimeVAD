@@ -125,6 +125,8 @@ class VAD:
         onset_events: bool = False,  # "onset" at the first confident frame, before "start" confirms it
         confirm_threshold: Optional[float] = None,  # each frame of the start debounce; default continue_threshold
         rearm_s: Optional[float] = None,  # sound that re-arms the quiet clock; default start_s
+        repause_s: Optional[float] = 0.02,  # sound after a "pause" that lets the next quiet block report a new one; None = off
+        repause_room_db: float = 6.0,  # ...counted only this far above the learned room noise
         soft_start_s: Optional[float] = 0.128,  # a start also after this long at soft_start_threshold; None = off
         soft_start_threshold: float = 0.5,
         normalize_to_dbfs: Optional[float] = None,  # quiet input: amplify what Silero sees up to this speech level (try -30)
@@ -188,6 +190,14 @@ class VAD:
         self._preroll_n = _frames(preroll_s)
         self._lookback_n = max(0, _frames(lookback_s))
         self._rearm_samples = max(1, math.ceil((start_s if rearm_s is None else rearm_s) * SAMPLE_RATE))
+        # A "pause" often comes inside the last word: the level dips under the threshold before a
+        # release, a fricative or a weak last syllable, comes back for 20 to 60 ms and only then
+        # stops. That is too short to re-arm the quiet clock, so the count restarted silently and
+        # the only "pause" was up to several hundred ms early. Now sound of repause_s that is over
+        # the quiet threshold and repause_room_db above the room (not the room's own flutter)
+        # lets the restarted count report a new "pause": the latest one is the best estimate.
+        self.repause_s, self.repause_room_db = repause_s, repause_room_db
+        self._repause_n = 0 if repause_s is None else max(1, math.ceil(repause_s * SAMPLE_RATE / BLOCK - 1e-9))
         self._restore_n = _frames(restore_s) if restore_s > 0 else 0
         self._deaf_n = _frames(deaf_s) if deaf_s > 0 and restore_s > 0 else 0
         self.reset()
@@ -358,13 +368,19 @@ class VAD:
         quiet = quiet or self._ns_quiet
         if self._t_quiet is not None:
             if quiet:
-                self._loud = 0
+                self._loud = self._clear = 0
                 self._quiet_blocks += self._unbroken
             else:
                 self._unbroken = False
                 self._loud += BLOCK
+                if self._repause_n and not self._again:
+                    n = self._noise_db
+                    if n is None or power >= 10.0 ** ((n + self.repause_room_db) / 10.0):
+                        self._clear += 1
+                        self._again = self._clear >= self._repause_n
                 if self._loud >= self._rearm_samples:
                     self._t_quiet, self._loud, self._paused, self._resumed = None, 0, False, False
+                    self._again = False
         return quiet
 
     def _block_end(self, quiet: bool, t: float, events: list[Event]) -> None:
@@ -377,6 +393,9 @@ class VAD:
             # armed, or counting anew after a click or a breath broke the count (speech that
             # Silero heard resume keeps it off until real sound re-arms it)
             self._t_quiet, self._unbroken, self._loud, self._quiet_blocks = t, True, 0, 1
+            if self._again:  # real sound since the last "pause": this one is a better estimate
+                self._paused = self._again = False
+            self._clear = 0
             raised = self._quiet > self.quiet_rms * (1 + 1e-6) or self._by_subtraction
             self._quiet_wait = self.quiet_end_s + (self.noisy_extra_s if raised else 0.0)
             self._pause(t, events, "quiet")
@@ -636,6 +655,8 @@ class VAD:
         self._unbroken = False
         self._resumed = False  # Silero heard speech resume inside the running quiet count
         self._loud = 0
+        self._clear = 0  # blocks in a row clearly above the room since the count last ran
+        self._again = False  # ...enough of them: the restarted count reports a new "pause"
         self._quiet_blocks = 0
         self._quiet_wait = self.quiet_end_s
         self._by_subtraction = False
