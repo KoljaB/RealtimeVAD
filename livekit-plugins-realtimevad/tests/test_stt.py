@@ -179,15 +179,17 @@ REPAUSE = "repause_s" in inspect.signature(realtimevad.vad._Core.__init__).param
 
 
 @pytest.mark.skipif(not REPAUSE, reason="this RealtimeVAD reports one pause per stretch of Silero silence")
-async def test_a_repeated_pause_while_silero_says_silence_replaces_the_first_one_too():
-    # Silero's probability falls with the audio; 64 ms of sound that it does not hear as voice follow.
-    # Its silence count runs through, but the raw silence counts from the second pause.
-    segments = LEAD + SPEECH + [(5, 0.1, 0.0), (2, 0.1, 0.1), (30, 0.1, 0.0)]
-    pauses = []
-    wrapped = Whisperish(takes=0.2)
-    events = await run(segments, wrapped, on_pause=pauses.append, vad_options={})
-    assert len(pauses) == 2
-    assert wrapped.cancelled == 1 and len(wrapped.requests) == 2
-    assert wrapped.requests[1] == pytest.approx(wrapped.requests[0] + 7 * F, abs=0.04)
-    assert [e for e in events if e[0] in (S.PREFLIGHT_TRANSCRIPT, S.FINAL_TRANSCRIPT)] == [
-        (S.PREFLIGHT_TRANSCRIPT, "text 2"), (S.FINAL_TRANSCRIPT, "text 2")]
+async def test_sound_that_silero_does_not_hear_restarts_the_pause_only_while_its_own_count_is_short():
+    # 128 ms of quiet audio, then 64 ms of sound that Silero does not hear as voice; the core reports
+    # a second pause both times. Silero lags (its count is at 32 ms when the sound comes) or does not (128 ms).
+    for lagging, requests in ((3, 2), (0, 1)):
+        segments = LEAD + SPEECH + [(lagging, 0.6, 0.0), (4 - lagging, 0.1, 0.0), (2, 0.1, 0.1), (30, 0.1, 0.0)]
+        pauses = []
+        wrapped = Whisperish(takes=0.2)
+        events = await run(segments, wrapped, on_pause=pauses.append, vad_options={})
+        assert len(pauses) == 2
+        # under ``pause`` (0.1 s) of Silero silence the request is made anew; over it, a noise
+        # after the last word does not throw the transcript away
+        assert len(wrapped.requests) == requests and wrapped.cancelled == requests - 1
+        assert [e for e in events if e[0] in (S.PREFLIGHT_TRANSCRIPT, S.FINAL_TRANSCRIPT)] == [
+            (S.PREFLIGHT_TRANSCRIPT, f"text {requests}"), (S.FINAL_TRANSCRIPT, f"text {requests}")]

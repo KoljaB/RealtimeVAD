@@ -287,7 +287,6 @@ class VADStream(agents_vad.VADStream):
         self._silence_from = 0.0  # when the last speech stopped
         self._speech_run = self._silence_run = 0.0
         self._half_run = 0  # frames in a row with Silero at 0.5 or more
-        self._pause_at: Optional[float] = None  # the newest "pause" of the running speech
         self._window_from = 0.0
 
     def _frames(self, t0: float, t1: float) -> list[rtc.AudioFrame]:
@@ -357,7 +356,6 @@ class VADStream(agents_vad.VADStream):
                 rising = (self._half_run + 1) * FRAME_S if frame.frame.probability >= 0.5 else 0.0
                 self._begin = now - max(confirmed, rising)
                 self._speech_run, self._silence_run = frame.frame.streak * FRAME_S, 0.0
-                self._pause_at = None
                 send(agents_vad.VADEvent(
                     type=T.START_OF_SPEECH, samples_index=round(now * SAMPLE_RATE), timestamp=now,
                     speech_duration=now - self._begin, silence_duration=0.0,
@@ -375,11 +373,11 @@ class VADStream(agents_vad.VADStream):
                 f = e.frame
                 self._half_run = self._half_run + 1 if f.probability >= 0.5 else 0
                 if self._speaking:
-                    silent = max(quiet_s, f.silent_frames * FRAME_S)  # the quiet clock is ahead of Silero
-                    if silent and self._pause_at is not None:
-                        # a repeated pause (sound came after the first one): the silence is no
-                        # older than the newest pause, although Silero's count ran through
-                        silent = min(silent, max(FRAME_S, e.time - self._pause_at + FRAME_S))
+                    # The quiet clock is ahead of Silero. Sound after a pause breaks the clock, and
+                    # the silence falls back to Silero's own count: under it the pause starts anew,
+                    # but sound that Silero does not call speech never makes the silence shorter
+                    # than Silero's (a noise after the last word must not undo the pause).
+                    silent = max(quiet_s, f.silent_frames * FRAME_S)
                     self._speech_run = 0.0 if silent else self._speech_run + FRAME_S
                     self._silence_run = silent
                 elif f.streak:
@@ -395,6 +393,4 @@ class VADStream(agents_vad.VADStream):
                     raw_accumulated_silence=self._silence_run, raw_accumulated_speech=self._speech_run))
                 self._window_from = e.time
             elif e.kind in ("pause", "onset"):
-                if e.kind == "pause":
-                    self._pause_at = e.time
                 self._vad.emit(e.kind, PauseEvent(e.time, e.source) if e.kind == "pause" else e.time)

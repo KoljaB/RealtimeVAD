@@ -130,8 +130,9 @@ class PauseFinder:
     ``step(event)`` returns "pause" when the raw silence inside speech first reaches ``pause``
     seconds and enough speech came since the last pause that was used, "resume" when sound came
     after a pause (raw silence back under ``pause``), else None. A VAD that reports several pauses
-    before one end (RealtimeVAD does when sound follows the first: its raw silence then counts
-    from the newest) shows here as pause, resume, pause: the newest one counts.
+    before one end shows here as pause, resume, pause, and the newest one counts. RealtimeVAD
+    does while Silero has not yet counted ``pause`` of silence itself (the last word went on);
+    sound after that, which Silero does not call speech, leaves the pause as it is.
     """
 
     def __init__(self, pause: float, min_new_speech: float = 0.0) -> None:
