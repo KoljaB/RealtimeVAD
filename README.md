@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/ff349429-7f20-4312-9884-2d8b330e3ac5
+
 # RealtimeVAD
 
 *An early "the speaker stopped" signal for voice assistants: 92 ms before Silero by default, 130 ms in fast mode, on a close microphone. None on a distant one.*
