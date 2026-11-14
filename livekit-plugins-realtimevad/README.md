@@ -31,7 +31,11 @@ It installs `realtimevad` 0.1.0 or newer with it.
 Plugin 0.1.0 needs RealtimeVAD 0.1.0 or newer: it relies on the end being
 Silero's by default and on the repeated pause.
 
-Tested with livekit-agents 1.8.11, Python 3.10+.
+Requires livekit-agents 1.8.10 or newer; tested with 1.8.10 and 1.8.11,
+Python 3.10+. Earlier 1.8.x releases lack STT APIs used by `SpeculativeSTT`:
+1.8.8 has no `STTCapabilities.manual_flush`, and 1.8.9 has no
+`RecognizeStream._mark_provider_progress`. The dependency minimum prevents
+installing the plugin alongside these incompatible versions.
 
 ## What `SpeculativeSTT` does
 
