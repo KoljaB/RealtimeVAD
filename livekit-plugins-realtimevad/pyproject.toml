@@ -24,10 +24,10 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
     "Typing :: Typed",
 ]
-dependencies = ["livekit-agents>=1.8", "realtimevad>=0.1.0", "numpy>=1.26"]
+dependencies = ["livekit-agents>=1.8.10", "realtimevad>=0.1.0", "numpy>=1.26"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-asyncio>=0.23", "livekit-plugins-silero>=1.8"]
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "livekit-plugins-silero>=1.8.10"]
 
 [project.urls]
 Homepage = "https://github.com/KoljaB/RealtimeVAD"
